@@ -1,0 +1,1643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lists in memory, step by step</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;700&family=Atkinson+Hyperlegible+Next:wght@400;600&display=swap" rel="stylesheet">
+<style>
+/* Layout: code on the left, the memory model on the right. Frames hold ids, objects are labelled idN: type,
+   and a line runs from each variable to the object it refers to. Sized to read from the back of a lecture hall. */
+:root{
+  --bg:#F5F6F8; --panel:#FFFFFF; --ink:#1C2230; --muted:#737B8C; --rule:#D3D8E0;
+  --str:#596173; --dim:#BCC1CB; --wire:#7A8397;
+  --hl:#FFE36E;
+  --sans:"Atkinson Hyperlegible Next","Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Atkinson Hyperlegible Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#13161C; --panel:#1B1F27; --ink:#E6E8ED; --muted:#8C93A2; --rule:#343B47;
+    --str:#A9B0BE; --dim:#454C59; --wire:#7C8596; --hl:rgba(242,203,72,.32); color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#13161C; --panel:#1B1F27; --ink:#E6E8ED; --muted:#8C93A2; --rule:#343B47;
+  --str:#A9B0BE; --dim:#454C59; --wire:#7C8596; --hl:rgba(242,203,72,.32); color-scheme:dark;
+}
+html{height:100%}
+*,*::before,*::after{box-sizing:border-box}
+[hidden]{display:none !important}
+body{margin:0;min-height:100%;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.4}
+.app{max-width:2000px;margin:0 auto;padding-inline:clamp(16px,2vw,30px);padding-block:clamp(12px,1.8vw,26px);display:flex;flex-direction:column;gap:clamp(12px,1.4vw,18px)}
+
+/* top bar */
+.top{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px 20px}
+.tabs{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center}
+.group{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.glabel{font-size:15px;color:var(--muted)}
+.seg{display:inline-flex;flex-wrap:wrap;border:1px solid var(--rule);border-radius:9px;overflow:hidden;background:var(--panel)}
+.seg button{font:inherit;font-size:15px;border:0;background:transparent;color:var(--muted);padding:.5em .95em;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+.tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px}
+.toggle{display:inline-flex;align-items:center;gap:.5em;color:var(--muted);font-size:15px;cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--ink);width:1.05em;height:1.05em;margin:0}
+.link{font:inherit;font-size:15px;color:var(--ink);background:none;border:0;padding:.2em 0;cursor:pointer;text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--rule)}
+.link:hover{text-decoration-color:var(--ink)}
+
+/* key ideas */
+.recipe{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:clamp(10px,1.6vw,20px)}
+.recipe li{display:flex;gap:.7em;align-items:flex-start;padding:.15em .3em;border-radius:8px;cursor:pointer}
+.recipe li:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.recipe b{display:block;font-weight:600;font-size:17px}
+.recipe span.d{display:block;color:var(--muted);font-size:15px}
+.recipe code{font-family:var(--mono);font-size:.92em;color:var(--ink)}
+.rnum,.rc i{display:inline-grid;place-items:center;border-radius:50%;border:1.5px solid var(--muted);color:var(--muted);font-style:normal;font-family:var(--mono);flex:none}
+.rnum{width:1.6em;height:1.6em;font-size:15px;margin-top:.05em}
+.recipe li.on .rnum,.rc i.on{background:var(--ink);border-color:var(--ink);color:var(--bg)}
+.recipe li.on b{text-decoration:underline;text-decoration-style:dashed;text-underline-offset:4px}
+@media (max-width:820px){.recipe{grid-template-columns:minmax(0,1fr)}}
+
+/* about line */
+.question{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:0;font-size:17px;color:var(--ink)}
+.question p{margin:0;max-width:80ch}
+.question code{font-family:var(--mono);font-size:.92em;background:var(--panel);border:1px solid var(--rule);border-radius:5px;padding:0 .3em;white-space:nowrap}
+.presets{display:flex;flex-wrap:wrap;gap:8px}
+.chipbtn{font:inherit;font-size:14px;border:1px solid var(--rule);background:var(--panel);color:var(--ink);border-radius:999px;padding:.25em .8em;cursor:pointer}
+.chipbtn:hover{border-color:var(--ink)}
+
+/* main */
+.main{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:clamp(12px,1.4vw,20px);align-items:start}
+@media (max-width:1000px){.main{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:12px;min-width:0}
+
+/* code */
+.code{font-family:var(--mono);font-size:clamp(14px,1.08vw,22px);padding:1em 1.4em 1em 0;overflow-x:auto;--row:1.85em}
+.lines{position:relative;min-width:max-content}
+.hl{position:absolute;left:0;right:0;top:0;height:var(--row);background:var(--hl);
+    transform:translateY(calc(var(--line,0) * var(--row)));transition:transform .3s cubic-bezier(.3,.7,.2,1)}
+.line{position:relative;height:var(--row);line-height:var(--row);white-space:pre;display:flex;align-items:center}
+.ln{flex:none;width:2.9em;padding-right:.7em;text-align:right;color:var(--muted);user-select:none}
+.rc{flex:none;width:2.6em;display:flex;align-items:center;gap:2px}
+.rc i{width:1.3em;height:1.3em;font-size:.62em;cursor:pointer;line-height:1}
+.line.cur .ln{color:var(--ink);font-weight:700}
+.k{font-weight:700}
+.s{color:var(--str)}
+.tok{border-radius:3px;cursor:pointer}
+.note{padding-left:2em;color:var(--ink);opacity:.72;display:inline-flex;align-items:center;gap:.4em}
+.nid{border:1.5px solid var(--muted);border-radius:5px;padding:0 .3em;line-height:1.3;font-size:.88em;cursor:pointer}
+.arg{font:inherit;color:var(--ink);background:transparent;border:0;border-bottom:1.5px dashed var(--muted);
+     padding:0;margin:0;min-width:1ch;line-height:1.25;border-radius:0}
+.arg.blank{border:1.5px dashed var(--muted);border-radius:5px;padding:0 .3ch;margin:0 .1ch;box-sizing:content-box}
+.arg:focus{outline:none;border-color:var(--ink);border-bottom-style:solid}
+.arg.blank:focus{border-style:solid}
+select.arg{border:1.5px dashed var(--muted);border-radius:5px;background:var(--panel);padding:0 .2em;cursor:pointer;line-height:1.3}
+.arg[aria-invalid="true"]{text-decoration:wavy underline var(--ink);text-underline-offset:4px}
+.editor{display:block;width:100%;min-height:16em;font:inherit;line-height:1.85;color:var(--ink);background:transparent;border:0;resize:vertical;
+        padding:0 0 0 1.4em;white-space:pre;overflow-x:auto;tab-size:4}
+.editor:focus{outline:none}
+
+/* state panel */
+.state{padding:1.1em 1.4em 1.4em;font-family:var(--mono);container-type:inline-size}
+.statehead{display:flex;flex-wrap:wrap;justify-content:space-between;gap:.3em 1em;font-family:var(--sans);font-size:15px;color:var(--muted);margin-bottom:.8em}
+
+/* memory model: frames | room for the lines | objects */
+.mem{position:relative;display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:clamp(3em,9cqi,6em);
+     align-items:start;font-size:clamp(17px,1.5vw,30px);transition:opacity .2s}
+@container (max-width:560px){.mem{font-size:15px;column-gap:2em}.statehead .tip{display:none}}
+.frames,.heap{position:relative;z-index:1;min-width:0}
+.frames{display:flex;flex-direction:column;gap:.8em}
+.frame{background:var(--panel);border:2px solid var(--rule);border-radius:.4em;padding:.3em .55em .5em;
+       display:grid;grid-template-columns:auto auto;gap:.45em .9em;align-items:center}
+.frame.active{border-color:var(--ink)}
+.frame>.fname,.frame>.empty{grid-column:1/-1}
+.fname{font-family:var(--sans);font-size:.6em;color:var(--muted)}
+.frame.active .fname{color:var(--ink);font-weight:600}
+.empty{font-family:var(--sans);font-size:.6em;color:var(--muted)}
+.vrow{display:grid;grid-template-columns:subgrid;grid-column:1/-1;align-items:center;transition:opacity .2s}
+.vname{justify-self:start;padding:0 .15em;border-radius:.2em;cursor:pointer}
+.vname:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.refs{justify-self:end;display:inline-flex;align-items:center;gap:.3em}
+.ref{display:inline-block;border:2px solid var(--ink);border-radius:.3em;padding:0 .3em;font-size:.82em;line-height:1.35;cursor:pointer;background:var(--panel);white-space:nowrap}
+.ref.chg{background:var(--hl)}
+.ref.old{border-style:dashed;border-color:var(--muted);color:var(--muted);text-decoration:line-through;text-decoration-thickness:2px}
+
+.heap{display:flex;flex-direction:column;gap:1.1em;align-items:flex-start}
+.grp{display:flex;flex-direction:column;gap:.45em;align-items:flex-start;max-width:100%}
+.erow{display:flex;flex-wrap:wrap;gap:.45em .6em;padding-left:.9em;max-width:100%}
+.obj{display:flex;flex-direction:column;gap:.1em;transition:opacity .2s;min-width:0;max-width:100%}
+.olabel{font-size:.6em;color:var(--muted);white-space:nowrap;padding:0 .2em;border-radius:3px;align-self:flex-start;cursor:pointer;background:var(--panel)}
+.obj.new .olabel{background:linear-gradient(var(--panel) 55%,var(--hl) 55%) var(--panel);color:var(--ink)}
+.obox{border:2px solid var(--rule);border-radius:.35em;padding:.2em .6em;min-width:2.3em;text-align:center;background:var(--panel);overflow-wrap:anywhere}
+.obj.list .obox,.obj.range .obox{border-color:var(--ink);padding:.25em .35em}
+.slots{display:flex;flex-wrap:wrap;gap:.25em}
+.slot{display:flex;flex-direction:column;align-items:center}
+.si{font-size:.5em;color:var(--muted);line-height:1.3}
+.slot .ref{font-size:.72em}
+.emptylist{font-size:.8em;color:var(--muted);padding:0 .4em}
+.obj.loose .obox,.obj.gone .obox{border-style:dashed}
+.obj.gone{opacity:.42}
+.ocap{font-family:var(--sans);font-size:.48em;color:var(--muted);max-width:10em;line-height:1.25;background:var(--panel);align-self:flex-start}
+.memempty{font-family:var(--sans);font-size:15px;color:var(--muted);grid-column:1/-1}
+
+/* the lines from variables to objects sit under the boxes */
+.wires{position:absolute;left:0;top:0;z-index:0;overflow:visible;pointer-events:none}
+.wire path{fill:none;stroke:var(--wire);stroke-width:.11em;stroke-linecap:round}
+.wire polygon{fill:var(--wire)}
+.wire.chg path{stroke:var(--ink);stroke-width:.12em}
+.wire.chg polygon,.wire.on polygon{fill:var(--ink)}
+.wire.on path{stroke:var(--ink)}
+.brushing .wire:not(.on){opacity:.15}
+
+/* loop strip */
+.loopwrap{margin-bottom:1.1em;padding-bottom:1em;border-bottom:1px solid var(--rule)}
+.looplabel{font-size:clamp(14px,1.05vw,19px);color:var(--muted);margin-bottom:.4em}
+.strip{display:flex;flex-wrap:wrap;gap:.35em;font-size:clamp(16px,1.35vw,26px)}
+.cell{display:flex;flex-direction:column;align-items:center;gap:.1em;flex:none}
+.box{min-width:1.9em;height:1.9em;padding:0 .3em;display:grid;place-items:center;border:2px solid var(--rule);border-radius:.3em;background:var(--panel);transition:background .2s;white-space:pre}
+.box.read{background:var(--hl);border-color:transparent}
+.cell.ghost .box{border-style:dashed;background:transparent}
+.cell.ghost .box.read{border-color:var(--ink)}
+.idx{font-size:.55em;color:var(--muted)}
+.pl{font-size:.62em;height:1.3em;white-space:nowrap}
+.more{align-self:center;color:var(--muted);font-size:.8em}
+
+.hint{margin:1em 0 0;font-family:var(--sans);font-size:clamp(16px,1.15vw,21px);color:var(--ink);line-height:1.45}
+.hint:empty{display:none}
+.hint .ans{display:block;margin-top:.4em;color:var(--muted)}
+.state.ended .mem{opacity:.6}
+
+/* output */
+.outwrap{margin-top:1.2em}
+.outlabel{font-family:var(--sans);font-size:15px;color:var(--muted);margin-bottom:.4em}
+.out{font-size:clamp(16px,1.3vw,24px);border-top:1px solid var(--rule);padding-top:.5em;min-height:2.2em;max-height:11.5em;overflow-y:auto}
+.out div{padding:.05em 0;overflow-wrap:anywhere}
+.out .new span{background:linear-gradient(transparent 58%,var(--hl) 58%)}
+.out .err{font-weight:700}
+
+/* brushing: a name or id lights up everywhere, the rest steps back */
+.brushing .src,.brushing .src .k,.brushing .src .s,.brushing .src .arg{color:var(--dim)}
+.brushing .src .tok.on{color:var(--ink)}
+.brushing .vrow:not(.on){opacity:.32}
+.brushing .obj:not(.on):not(.rel){opacity:.25}
+.brushing .box[data-id]:not(.on){opacity:.35}
+.tok.on,.vrow.on .vname,.ref.on,.nid.on,.box.on,.obj.on>.obox{outline:2px dashed var(--ink);outline-offset:2px}
+.rbrushing .line:not(.ron) .src,.rbrushing .line:not(.ron) .src *{color:var(--dim)}
+.rbrushing .line:not(.ron) .arg{border-color:var(--dim)}
+.rbrushing .line.ron .src{outline:2px dashed var(--ink);outline-offset:3px;border-radius:4px}
+
+/* controls */
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.btn{font:inherit;font-weight:600;font-size:16px;padding:.55em 1.15em;border-radius:9px;border:1px solid var(--rule);
+     background:var(--panel);color:var(--ink);cursor:pointer}
+.btn.primary{background:var(--ink);color:var(--bg);border-color:var(--ink);min-width:6.5em}
+.btn:disabled{opacity:.38;cursor:default}
+button:focus-visible,.toggle input:focus-visible,input[type=range]:focus-visible,.rc i:focus-visible,select:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+#scrub{flex:1;min-width:140px;accent-color:var(--ink)}
+.counter{font-family:var(--mono);font-size:15px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:5.5em;text-align:right}
+
+@media (prefers-reduced-motion: reduce){.hl,.box,.mem,.obj,.vrow{transition:none}}
+</style>
+</head>
+<body>
+
+<div class="app" id="app">
+  <header class="top">
+    <div class="tabs">
+      <div class="group"><span class="glabel">Demo</span><div class="seg" id="seg-demo" role="group" aria-label="Demo examples"></div></div>
+      <div class="group"><span class="glabel">Ways to loop</span><div class="seg" id="seg-loop" role="group" aria-label="Ways to loop"></div></div>
+      <div class="group"><span class="glabel">Worksheet 16</span><div class="seg" id="seg-w16" role="group" aria-label="Worksheet 16 questions"></div></div>
+      <div class="group"><span class="glabel">Worksheet 17</span><div class="seg" id="seg-w17" role="group" aria-label="Worksheet 17 questions"></div></div>
+    </div>
+    <div class="tools">
+      <label class="toggle"><input type="checkbox" id="results" checked> Show results</label>
+      <button class="link" id="edit">Edit code</button>
+      <button class="link" id="reset">Reset code</button>
+      <button class="link" id="answers" hidden>Show answers</button>
+    </div>
+  </header>
+
+  <ol class="recipe" aria-label="Key ideas">
+    <li data-recipe="rebind" tabindex="0"><span class="rnum">1</span><div><b>Assignment rebinds</b><span class="d"><code>name = …</code> stores a new id in the variable. The old object is not changed.</span></div></li>
+    <li data-recipe="mutate" tabindex="0"><span class="rnum">2</span><div><b>Mutation changes the object</b><span class="d"><code>.append</code>, <code>.sort</code>, <code>x[i] = …</code> change the list itself. Every alias sees it.</span></div></li>
+    <li data-recipe="newlist" tabindex="0"><span class="rnum">3</span><div><b>New list, new id</b><span class="d"><code>[…]</code>, <code>+</code> and <code>[:]</code> build a brand-new list object.</span></div></li>
+  </ol>
+
+  <div class="question"><p id="about"></p><div class="presets" id="presets"></div></div>
+
+  <main class="main">
+    <section class="panel code" aria-label="Code"><div class="lines" id="lines"></div></section>
+    <section class="panel state" id="state" aria-label="Memory model and output">
+      <div class="statehead"><span>Memory model</span><span class="tip">hover a name or an id to trace it</span></div>
+      <div class="loopwrap" id="loopwrap" hidden><div class="looplabel" id="looplabel"></div><div class="strip" id="strip"></div></div>
+      <div class="mem" id="mem"></div>
+      <p class="hint" id="hint"></p>
+      <div class="outwrap" id="outwrap"><div class="outlabel">Output</div><div class="out" id="out"></div></div>
+    </section>
+  </main>
+
+  <nav class="controls" aria-label="Step controls">
+    <button class="btn" id="restart" title="Home">Restart</button>
+    <button class="btn" id="back" title="Left arrow">Back</button>
+    <button class="btn primary" id="next" title="Right arrow or Space">Step</button>
+    <input type="range" id="scrub" min="0" max="0" value="0" aria-label="Jump to step">
+    <span class="counter" id="counter"></span>
+  </nav>
+</div>
+
+<script>
+/* ===== A small Python interpreter with an id-based memory model ===== */
+class PyError extends Error { constructor(name, msg) { super(msg || ''); this.pyName = name; } }
+const syntax = m => new PyError('SyntaxError', m || 'invalid syntax');
+const typeErr = m => new PyError('TypeError', m);
+const KWS = new Set(['and', 'or', 'not', 'in', 'is', 'True', 'False', 'None', 'def', 'for', 'while', 'if', 'elif', 'else', 'return', 'pass', 'break', 'continue']);
+
+function tokenize(src) {
+  const toks = []; let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === ' ' || c === '\t' || c === '\n' || c === '\r') { i++; continue; }
+    if (c === '#') { const j = src.indexOf('\n', i); if (j < 0) break; i = j; continue; }
+    const s0 = i;
+    if (/\d/.test(c) || (c === '.' && /\d/.test(src[i + 1] || ''))) {
+      while (/\d/.test(src[i] || '')) i++;
+      let fl = false;
+      if (src[i] === '.' && !/[A-Za-z_]/.test(src[i + 1] || '')) { fl = true; i++; while (/\d/.test(src[i] || '')) i++; }
+      toks.push({ t: fl ? 'float' : 'int', v: src.slice(s0, i), s0, s1: i }); continue;
+    }
+    if (c === "'" || c === '"') {
+      const tq = c.repeat(3);
+      if (src.startsWith(tq, i)) {
+        const end = src.indexOf(tq, i + 3);
+        if (end < 0) throw syntax('unterminated triple-quoted string (keep docstrings on one line here)');
+        toks.push({ t: 'str', v: src.slice(i + 3, end), s0, s1: end + 3 }); i = end + 3; continue;
+      }
+      i++; let val = '';
+      while (i < src.length && src[i] !== c && src[i] !== '\n') {
+        if (src[i] === '\\') { const n = src[i + 1] || ''; val += n === 'n' ? '\n' : n === 't' ? '\t' : n; i += 2; }
+        else val += src[i++];
+      }
+      if (src[i] !== c) throw syntax('unterminated string literal');
+      i++; toks.push({ t: 'str', v: val, s0, s1: i }); continue;
+    }
+    if (/[A-Za-z_]/.test(c)) {
+      while (/\w/.test(src[i] || '')) i++;
+      const w = src.slice(s0, i);
+      toks.push({ t: KWS.has(w) ? 'kw' : 'name', v: w, s0, s1: i }); continue;
+    }
+    const two = src.slice(i, i + 2);
+    if (['//', '**', '==', '!=', '<=', '>=', '->', '+=', '-=', '*='].includes(two)) { toks.push({ t: 'op', v: two, s0, s1: i + 2 }); i += 2; continue; }
+    if ('+-*/%<>()[]:,.='.includes(c)) { toks.push({ t: 'op', v: c, s0, s1: i + 1 }); i++; continue; }
+    throw syntax(`invalid character '${c}'`);
+  }
+  toks.push({ t: 'eof', v: '', s0: src.length, s1: src.length });
+  return toks;
+}
+
+function exprParser(T, src) {
+  let p = 0;
+  const peek = () => T[p], next = () => T[p++];
+  const isOp = v => T[p].t === 'op' && T[p].v === v;
+  const isKw = v => T[p].t === 'kw' && T[p].v === v;
+  const atEnd = () => T[p].t === 'eof';
+  const expect = v => { if (!isOp(v)) throw syntax(atEnd() ? `expected '${v}'` : 'invalid syntax'); return next(); };
+  const node = (o, s0, s1) => Object.assign(o, { s0, s1, src: src.slice(s0, s1) });
+  const orE = () => { let l = andE(); while (isKw('or')) { next(); const r = andE(); l = node({ t: 'bool', op: 'or', l, r }, l.s0, r.s1); } return l; };
+  const andE = () => { let l = notE(); while (isKw('and')) { next(); const r = notE(); l = node({ t: 'bool', op: 'and', l, r }, l.s0, r.s1); } return l; };
+  const notE = () => { if (isKw('not')) { const s0 = next().s0; const x = notE(); return node({ t: 'not', x }, s0, x.s1); } return cmpE(); };
+  const cmpOp = () => {
+    const k = T[p];
+    if (k.t === 'op' && ['<', '>', '==', '!=', '<=', '>='].includes(k.v)) { p++; return k.v; }
+    if (isKw('in')) { p++; return 'in'; }
+    if (isKw('not') && T[p + 1].t === 'kw' && T[p + 1].v === 'in') { p += 2; return 'not in'; }
+    if (isKw('is')) { p++; if (isKw('not')) { p++; return 'is not'; } return 'is'; }
+    return null;
+  };
+  const cmpE = () => {
+    const first = sumE(), ops = [], items = [first]; let op;
+    while ((op = cmpOp())) { ops.push(op); items.push(sumE()); }
+    return ops.length ? node({ t: 'cmp', ops, items }, first.s0, items[items.length - 1].s1) : first;
+  };
+  const sumE = () => { let l = termE(); while (isOp('+') || isOp('-')) { const op = next().v; const r = termE(); l = node({ t: 'bin', op, l, r }, l.s0, r.s1); } return l; };
+  const termE = () => { let l = unaryE(); while (['*', '/', '//', '%'].some(isOp)) { const op = next().v; const r = unaryE(); l = node({ t: 'bin', op, l, r }, l.s0, r.s1); } return l; };
+  const unaryE = () => { if (isOp('-') || isOp('+')) { const k = next(); const x = unaryE(); return node({ t: 'unary', op: k.v, x }, k.s0, x.s1); } return powE(); };
+  const powE = () => { const b = postE(); if (isOp('**')) { next(); const x = unaryE(); return node({ t: 'bin', op: '**', l: b, r: x }, b.s0, x.s1); } return b; };
+  const postE = () => {
+    let e = atom();
+    for (;;) {
+      if (isOp('(')) {
+        next(); const args = [];
+        while (!isOp(')')) { args.push(orE()); if (isOp(',')) next(); else break; }
+        e = node({ t: 'call', f: e, args }, e.s0, expect(')').s1);
+      } else if (isOp('[')) {
+        next(); let a = null, b = null, c = null, sl = false;
+        if (!isOp(':')) a = orE();
+        if (isOp(':')) {
+          next(); sl = true;
+          if (!isOp(']') && !isOp(':')) b = orE();
+          if (isOp(':')) { next(); if (!isOp(']')) c = orE(); }
+        }
+        const s1 = expect(']').s1;
+        if (!sl && !a) throw syntax();
+        e = sl ? node({ t: 'slice', o: e, a, b, c }, e.s0, s1) : node({ t: 'index', o: e, i: a }, e.s0, s1);
+      } else if (isOp('.')) {
+        next(); const n = next(); if (n.t !== 'name') throw syntax();
+        e = node({ t: 'attr', o: e, name: n.v }, e.s0, n.s1);
+      } else return e;
+    }
+  };
+  const atom = () => {
+    const k = next();
+    if (k.t === 'int') return node({ t: 'lit', k: 'int', v: Number(k.v) }, k.s0, k.s1);
+    if (k.t === 'float') return node({ t: 'lit', k: 'float', v: parseFloat(k.v) }, k.s0, k.s1);
+    if (k.t === 'str') return node({ t: 'lit', k: 'str', v: k.v }, k.s0, k.s1);
+    if (k.t === 'kw' && (k.v === 'True' || k.v === 'False')) return node({ t: 'lit', k: 'bool', v: k.v === 'True' }, k.s0, k.s1);
+    if (k.t === 'kw' && k.v === 'None') return node({ t: 'lit', k: 'none', v: null }, k.s0, k.s1);
+    if (k.t === 'name') return node({ t: 'name', id: k.v }, k.s0, k.s1);
+    if (k.t === 'op' && k.v === '(') { const e = orE(); const s1 = expect(')').s1; e.paren = true; return node(e, k.s0, s1); }
+    if (k.t === 'op' && k.v === '[') {
+      const items = [];
+      while (!isOp(']')) { items.push(orE()); if (isOp(',')) next(); else break; }
+      return node({ t: 'list', items }, k.s0, expect(']').s1);
+    }
+    if (k.t === 'eof') throw syntax('expression is incomplete');
+    throw syntax();
+  };
+  return { peek, next, isOp, isKw, atEnd, expect, orE };
+}
+
+/* a statement continues onto the next line while a bracket or a triple-quoted string is open */
+function stillOpen(t) {
+  let d = 0, i = 0;
+  while (i < t.length) {
+    const c = t[i];
+    if (c === '#') { const j = t.indexOf('\n', i); if (j < 0) break; i = j; continue; }
+    if (c === '"' || c === "'") {
+      const tq = c.repeat(3);
+      if (t.startsWith(tq, i)) { const e = t.indexOf(tq, i + 3); if (e < 0) return true; i = e + 3; continue; }
+      i++; while (i < t.length && t[i] !== c && t[i] !== '\n') i += t[i] === '\\' ? 2 : 1;
+      i++; continue;
+    }
+    if (c === '(' || c === '[') d++; else if (c === ')' || c === ']') d--;
+    i++;
+  }
+  return d > 0;
+}
+function parseProgram(lines) {
+  const items = [];
+  for (let ln = 0; ln < lines.length; ln++) {
+    const start = ln; let text = lines[ln];
+    while (stillOpen(text) && ln + 1 < lines.length) text += '\n' + lines[++ln];
+    let toks;
+    try { toks = tokenize(text); } catch (e) { e.line = start; throw e; }
+    if (toks.length === 1) continue;
+    const indent = lines[start].replace(/\t/g, '    ').match(/^ */)[0].length;
+    items.push({ indent, ln: start, toks, text });
+  }
+  let p = 0;
+  const err = (ln, e) => { e.line = ln; return e; };
+  function block(indent) {
+    const out = [];
+    while (p < items.length && items[p].indent === indent) out.push(stmt(indent));
+    if (p < items.length && items[p].indent > indent) throw err(items[p].ln, new PyError('IndentationError', 'unexpected indent'));
+    return out;
+  }
+  function body(parent, ln) {
+    if (p >= items.length || items[p].indent <= parent) throw err(ln, new PyError('IndentationError', 'expected an indented block'));
+    return block(items[p].indent);
+  }
+  function stmt(indent) {
+    const it = items[p++], ln = it.ln;
+    try {
+      const P = exprParser(it.toks, it.text), t0 = P.peek();
+      const colonEnd = () => { P.expect(':'); if (!P.atEnd()) throw syntax(); };
+      const skipAnn = stops => {
+        let depth = 0;
+        while (!P.atEnd()) {
+          const k = P.peek();
+          if (k.t === 'op') {
+            if (k.v === '(' || k.v === '[') depth++;
+            else if (k.v === ')' || k.v === ']') { if (!depth) break; depth--; }
+            else if (!depth && stops.includes(k.v)) break;
+          }
+          P.next();
+        }
+      };
+      if (t0.t === 'kw') {
+        switch (t0.v) {
+          case 'def': {
+            P.next(); const nm = P.next(); if (nm.t !== 'name') throw syntax();
+            P.expect('('); const params = [];
+            while (!P.isOp(')')) {
+              const pn = P.next(); if (pn.t !== 'name') throw syntax();
+              params.push(pn.v);
+              if (P.isOp(':')) { P.next(); skipAnn([',']); }
+              if (P.isOp(',')) P.next(); else break;
+            }
+            P.expect(')');
+            if (P.isOp('->')) { P.next(); skipAnn([':']); }
+            colonEnd();
+            return { k: 'def', ln, name: nm.v, params, body: body(indent, ln) };
+          }
+          case 'for': {
+            P.next(); const tg = P.next(); if (tg.t !== 'name') throw syntax();
+            if (!P.isKw('in')) throw syntax("expected 'in'");
+            P.next(); const iter = P.orE(); colonEnd();
+            return { k: 'for', ln, target: tg.v, iter, body: body(indent, ln) };
+          }
+          case 'while': { P.next(); const cond = P.orE(); colonEnd(); return { k: 'while', ln, cond, body: body(indent, ln) }; }
+          case 'if': {
+            P.next(); const cond = P.orE(); colonEnd();
+            const branches = [{ ln, cond, body: body(indent, ln) }]; let orelse = null;
+            while (p < items.length && items[p].indent === indent && items[p].toks[0].t === 'kw' && ['elif', 'else'].includes(items[p].toks[0].v)) {
+              const it2 = items[p++], P2 = exprParser(it2.toks, it2.text);
+              try {
+                if (P2.next().v === 'elif') {
+                  const c2 = P2.orE(); P2.expect(':'); if (!P2.atEnd()) throw syntax();
+                  branches.push({ ln: it2.ln, cond: c2, body: body(indent, it2.ln) });
+                } else { P2.expect(':'); if (!P2.atEnd()) throw syntax(); orelse = body(indent, it2.ln); break; }
+              } catch (e) { if (e.line === undefined) e.line = it2.ln; throw e; }
+            }
+            return { k: 'if', ln, branches, orelse };
+          }
+          case 'return': { P.next(); const value = P.atEnd() ? null : P.orE(); if (!P.atEnd()) throw syntax(); return { k: 'return', ln, value }; }
+          case 'pass': case 'break': case 'continue': P.next(); if (!P.atEnd()) throw syntax(); return { k: t0.v, ln };
+          case 'elif': case 'else': throw syntax(`'${t0.v}' without a matching 'if'`);
+        }
+      }
+      const target = P.orE();
+      if (P.isOp('=') || P.isOp('+=') || P.isOp('-=') || P.isOp('*=')) {
+        const op = P.next().v;
+        if (target.t !== 'name' && target.t !== 'index') throw syntax(`cannot assign to ${target.src}`);
+        const value = P.orE(); if (!P.atEnd()) throw syntax();
+        return op === '=' ? { k: 'assign', ln, target, value } : { k: 'aug', ln, op, target, value };
+      }
+      if (!P.atEnd()) throw syntax();
+      if (target.t === 'lit' && target.k === 'str') return { k: 'doc', ln };
+      return { k: 'expr', ln, expr: target };
+    } catch (e) { if (e.line === undefined) e.line = ln; throw e; }
+  }
+  if (items.length && items[0].indent > 0) throw err(items[0].ln, new PyError('IndentationError', 'unexpected indent'));
+  const prog = block(0);
+  if (p < items.length) throw err(items[p].ln, new PyError('IndentationError', 'unindent does not match any outer indentation level'));
+  return prog;
+}
+
+/* ---------- values ---------- */
+const TYPE = { int: 'int', float: 'float', str: 'str', bool: 'bool', none: 'NoneType', list: 'list', range: 'range', func: 'function', builtin: 'builtin_function_or_method', method: 'builtin_function_or_method' };
+const tn = o => TYPE[o.t];
+function pyQuote(s) {
+  const q = s.includes("'") && !s.includes('"') ? '"' : "'";
+  return q + s.replace(/\\/g, '\\\\').split(q).join('\\' + q).replace(/\n/g, '\\n').replace(/\t/g, '\\t') + q;
+}
+function fmtFloat(v) { return Number.isFinite(v) ? (Number.isInteger(v) ? v.toFixed(1) : String(v)) : Number.isNaN(v) ? 'nan' : v > 0 ? 'inf' : '-inf'; }
+function repr(o, seen = new Set()) {
+  switch (o.t) {
+    case 'int': return String(o.v);
+    case 'float': return fmtFloat(o.v);
+    case 'str': return pyQuote(o.v);
+    case 'bool': return o.v ? 'True' : 'False';
+    case 'none': return 'None';
+    case 'list': {
+      if (seen.has(o)) return '[...]';
+      seen.add(o); const r = '[' + o.items.map(x => repr(x, seen)).join(', ') + ']'; seen.delete(o); return r;
+    }
+    case 'range': return o.step === 1 ? `range(${o.start}, ${o.stop})` : `range(${o.start}, ${o.stop}, ${o.step})`;
+    case 'func': return `<function ${o.name}>`;
+    case 'builtin': return `<built-in function ${o.name}>`;
+    case 'method': return `<built-in method ${o.name}>`;
+  }
+  return '?';
+}
+const pyStr = o => (o.t === 'str' ? o.v : repr(o));
+const isNum = o => o.t === 'int' || o.t === 'float' || o.t === 'bool';
+const isIntish = o => o.t === 'int' || o.t === 'bool';
+const numVal = o => (o.t === 'bool' ? (o.v ? 1 : 0) : o.v);
+const truthy = o => {
+  switch (o.t) {
+    case 'none': return false; case 'bool': return o.v; case 'int': case 'float': return o.v !== 0;
+    case 'str': return o.v.length > 0; case 'list': return o.items.length > 0; case 'range': return rangeLen(o) > 0;
+  }
+  return true;
+};
+const rangeLen = r => (r.step > 0 ? Math.max(0, Math.ceil((r.stop - r.start) / r.step)) : Math.max(0, Math.ceil((r.start - r.stop) / -r.step)));
+function eqv(a, b) {
+  if (a === b) return true;
+  if (isNum(a) && isNum(b)) return numVal(a) === numVal(b);
+  if (a.t === 'str' && b.t === 'str') return a.v === b.v;
+  if (a.t === 'list' && b.t === 'list') return a.items.length === b.items.length && a.items.every((x, i) => eqv(x, b.items[i]));
+  if (a.t === 'range' && b.t === 'range') return a.start === b.start && a.stop === b.stop && a.step === b.step;
+  return false;
+}
+function lt(a, b, op) {
+  if (isNum(a) && isNum(b)) return numVal(a) < numVal(b);
+  if (a.t === 'str' && b.t === 'str') return a.v < b.v;
+  if (a.t === 'list' && b.t === 'list') {
+    for (let i = 0; i < Math.min(a.items.length, b.items.length); i++) if (!eqv(a.items[i], b.items[i])) return lt(a.items[i], b.items[i], op);
+    return a.items.length < b.items.length;
+  }
+  throw typeErr(`'${op}' not supported between instances of '${tn(a)}' and '${tn(b)}'`);
+}
+const BUILTIN_NAMES = new Set(['print', 'id', 'len', 'range', 'min', 'max', 'sum', 'sorted', 'list', 'str', 'int', 'abs']);
+const LIST_METHODS = new Set(['append', 'insert', 'extend', 'pop', 'remove', 'sort', 'reverse', 'index', 'count', 'copy', 'clear']);
+const STR_METHODS = new Set(['lower', 'upper', 'strip', 'split', 'join', 'replace', 'startswith', 'endswith', 'find', 'count', 'isdigit', 'isalpha', 'index']);
+const BREAK = { sig: 'break' }, CONT = { sig: 'continue' };
+class ReturnSig { constructor(v) { this.v = v; } }
+
+function makeVM(prog) {
+  let nextId = 1, seqN = 0, fidN = 0, curLine = 0, created = [];
+  const intern = new Map(), out = [];
+  const roles = { rebind: new Set(), mutate: new Set(), newlist: new Set() };
+  const glob = { fid: fidN++, name: '__main__', vars: new Map() };
+  const stack = [glob], funcs = new Map(), loops = [], extraRoots = [], recs = [];
+
+  /* ids are handed out only when an object first shows up in the drawing, in the order the objects were made, so they read 1, 2, 3, ... */
+  const alloc = o => { o.seq = seqN++; created.push(o); if (o.t === 'list') roles.newlist.add(curLine); return o; };
+  function assignIds(roots) {
+    const todo = [], seen = new Set();
+    const walk = o => { if (!o || seen.has(o)) return; seen.add(o); if (o.id === undefined) todo.push(o); if (o.t === 'list') o.items.forEach(walk); };
+    roots.forEach(walk);
+    todo.sort((a, b) => (a.seq ?? 1e9) - (b.seq ?? 1e9)).forEach(o => { o.id = nextId++; });
+  }
+  const interned = (key, f) => { let o = intern.get(key); if (!o) { o = alloc(f()); intern.set(key, o); } return o; };
+  const mk = {
+    int: n => interned('i' + n, () => ({ t: 'int', v: n })),
+    float: x => interned('f' + x, () => ({ t: 'float', v: x })),
+    str: s => interned('s' + s, () => ({ t: 'str', v: s })),
+    bool: b => interned(b ? 'T' : 'F', () => ({ t: 'bool', v: b })),
+    none: () => interned('N', () => ({ t: 'none' })),
+    list: items => alloc({ t: 'list', items }),
+    range: (a, b, c) => alloc({ t: 'range', start: a, stop: b, step: c }),
+  };
+  const markMut = () => roles.mutate.add(curLine);
+  const intArg = (o, what) => { if (!isIntish(o)) throw typeErr(`'${tn(o)}' object cannot be interpreted as an integer${what ? ` (${what})` : ''}`); return numVal(o); };
+
+  function lookup(name) {
+    const f = stack[stack.length - 1];
+    if (f.vars.has(name)) return f.vars.get(name);
+    if (glob.vars.has(name)) return glob.vars.get(name);
+    if (funcs.has(name)) return funcs.get(name);
+    if (BUILTIN_NAMES.has(name)) return { t: 'builtin', name };
+    throw new PyError('NameError', `name '${name}' is not defined`);
+  }
+  const lookupQuiet = name => { try { return lookup(name); } catch (e) { return null; } };
+  const setVar = (name, o) => stack[stack.length - 1].vars.set(name, o);
+
+  function arith(op, a, b) {
+    if (op === '+' && a.t === 'str' && b.t === 'str') return mk.str(a.v + b.v);
+    if (op === '+' && a.t === 'list' && b.t === 'list') return mk.list([...a.items, ...b.items]);
+    if (op === '*') {
+      const seq = ['str', 'list'].includes(a.t) ? a : ['str', 'list'].includes(b.t) ? b : null;
+      const n = seq === a ? b : a;
+      if (seq && isIntish(n)) {
+        const k = Math.max(0, numVal(n));
+        if ((seq.t === 'str' ? seq.v.length : seq.items.length) * k > 2000) throw new PyError('MemoryError', 'too long for this page');
+        if (seq.t === 'str') return mk.str(seq.v.repeat(k));
+        const items = []; for (let i = 0; i < k; i++) items.push(...seq.items); return mk.list(items);
+      }
+    }
+    if (!isNum(a) || !isNum(b)) {
+      if (op === '+' && (a.t === 'str' || a.t === 'list')) throw typeErr(`can only concatenate ${a.t} (not "${tn(b)}") to ${a.t}`);
+      throw typeErr(`unsupported operand type(s) for ${op}: '${tn(a)}' and '${tn(b)}'`);
+    }
+    const x = numVal(a), y = numVal(b), ints = isIntish(a) && isIntish(b);
+    const num = v => (ints ? mk.int(v) : mk.float(v));
+    switch (op) {
+      case '+': return num(x + y);
+      case '-': return num(x - y);
+      case '*': return num(x * y);
+      case '/': if (y === 0) throw new PyError('ZeroDivisionError', 'division by zero'); return mk.float(x / y);
+      case '//': if (y === 0) throw new PyError('ZeroDivisionError', 'integer division or modulo by zero'); return num(Math.floor(x / y));
+      case '%': if (y === 0) throw new PyError('ZeroDivisionError', 'integer modulo by zero'); return num(x - y * Math.floor(x / y));
+      case '**': return ints && y >= 0 ? mk.int(x ** y) : mk.float(x ** y);
+    }
+    throw syntax();
+  }
+  function compare(op, a, b) {
+    switch (op) {
+      case '==': return eqv(a, b);
+      case '!=': return !eqv(a, b);
+      case 'is': return a === b;
+      case 'is not': return a !== b;
+      case 'in': case 'not in': {
+        let r;
+        if (b.t === 'list') r = b.items.some(x => eqv(x, a));
+        else if (b.t === 'str') { if (a.t !== 'str') throw typeErr(`'in <string>' requires string as left operand, not ${tn(a)}`); r = b.v.includes(a.v); }
+        else if (b.t === 'range') { const n = numVal(a); r = isIntish(a) && (b.step > 0 ? n >= b.start && n < b.stop : n <= b.start && n > b.stop) && (n - b.start) % b.step === 0; }
+        else throw typeErr(`argument of type '${tn(b)}' is not iterable`);
+        return op === 'in' ? r : !r;
+      }
+      case '<': return lt(a, b, op);
+      case '>': return lt(b, a, op);
+      case '<=': return !lt(b, a, op);
+      case '>=': return !lt(a, b, op);
+    }
+  }
+  function seqLen(o) {
+    if (o.t === 'list') return o.items.length;
+    if (o.t === 'str') return o.v.length;
+    if (o.t === 'range') return rangeLen(o);
+    throw typeErr(`object of type '${tn(o)}' has no len()`);
+  }
+  function iterAcc(o) {
+    if (o.t === 'list') return { len: () => o.items.length, at: i => o.items[i] };
+    if (o.t === 'str') return { len: () => o.v.length, at: i => mk.str(o.v[i]) };
+    if (o.t === 'range') return { len: () => rangeLen(o), at: i => mk.int(o.start + i * o.step) };
+    throw typeErr(`'${tn(o)}' object is not iterable`);
+  }
+  function normIndex(o, iv, assign) {
+    if (!['list', 'str', 'range'].includes(o.t)) throw typeErr(`'${tn(o)}' object is not subscriptable`);
+    if (!isIntish(iv)) throw typeErr(`${o.t} indices must be integers, not '${tn(iv)}'`);
+    const L = seqLen(o); let k = numVal(iv);
+    if (k < 0) k += L;
+    if (k < 0 || k >= L) throw new PyError('IndexError', `${o.t === 'str' ? 'string' : o.t}${assign ? ' assignment' : ''} index out of range`);
+    return k;
+  }
+  const getItem = (o, iv) => iterAcc(o).at(normIndex(o, iv));
+  function setItem(o, iv, v) {
+    if (o.t === 'str') throw typeErr("'str' object does not support item assignment");
+    if (o.t !== 'list') throw typeErr(`'${tn(o)}' object does not support item assignment`);
+    o.items[normIndex(o, iv, true)] = v; markMut();
+  }
+  function sliceIdx(L, a, b, c) {
+    const step = c === null ? 1 : c;
+    if (step === 0) throw new PyError('ValueError', 'slice step cannot be zero');
+    const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x < 0 ? x + L : x));
+    let start, stop;
+    if (step > 0) { start = a === null ? 0 : clamp(a, 0, L); stop = b === null ? L : clamp(b, 0, L); }
+    else { start = a === null ? L - 1 : clamp(a, -1, L - 1); stop = b === null ? -1 : clamp(b, -1, L - 1); }
+    const r = []; for (let i = start; step > 0 ? i < stop : i > stop; i += step) r.push(i);
+    return r;
+  }
+  function extendList(l, it) { const acc = iterAcc(it), n = acc.len(), add = []; for (let i = 0; i < n; i++) add.push(acc.at(i)); l.items.push(...add); markMut(); }
+  function getAttr(o, name) {
+    if ((o.t === 'list' && LIST_METHODS.has(name)) || (o.t === 'str' && STR_METHODS.has(name))) return { t: 'method', name, self: o };
+    throw new PyError('AttributeError', `'${tn(o)}' object has no attribute '${name}'`);
+  }
+  function sortKey(items) {
+    for (let i = 1; i < items.length; i++) lt(items[i], items[i - 1], '<');
+    return [...items].sort((x, y) => (lt(x, y, '<') ? -1 : lt(y, x, '<') ? 1 : 0));
+  }
+  function callMethod(m, args) {
+    const s = m.self, name = m.name;
+    const argc = (lo, hi = lo) => { if (args.length < lo || args.length > hi) throw typeErr(`${name}() takes ${lo === hi ? lo : `${lo} to ${hi}`} argument${hi === 1 ? '' : 's'} (${args.length} given)`); };
+    if (s.t === 'list') {
+      switch (name) {
+        case 'append': argc(1); s.items.push(args[0]); markMut(); return mk.none();
+        case 'insert': {
+          argc(2); let k = intArg(args[0]); const L = s.items.length;
+          if (k < 0) k = Math.max(0, k + L); k = Math.min(k, L);
+          s.items.splice(k, 0, args[1]); markMut(); return mk.none();
+        }
+        case 'extend': argc(1); extendList(s, args[0]); return mk.none();
+        case 'pop': {
+          argc(0, 1);
+          if (!s.items.length) throw new PyError('IndexError', 'pop from empty list');
+          const k = args.length ? normIndex(s, args[0]) : s.items.length - 1;
+          const v = s.items.splice(k, 1)[0]; markMut(); return v;
+        }
+        case 'remove': {
+          argc(1); const k = s.items.findIndex(x => eqv(x, args[0]));
+          if (k < 0) throw new PyError('ValueError', 'list.remove(x): x not in list');
+          s.items.splice(k, 1); markMut(); return mk.none();
+        }
+        case 'sort': argc(0); s.items = sortKey(s.items); markMut(); return mk.none();
+        case 'reverse': argc(0); s.items.reverse(); markMut(); return mk.none();
+        case 'index': {
+          argc(1); const k = s.items.findIndex(x => eqv(x, args[0]));
+          if (k < 0) throw new PyError('ValueError', `${repr(args[0])} is not in list`); return mk.int(k);
+        }
+        case 'count': argc(1); return mk.int(s.items.filter(x => eqv(x, args[0])).length);
+        case 'copy': argc(0); return mk.list([...s.items]);
+        case 'clear': argc(0); s.items = []; markMut(); return mk.none();
+      }
+    }
+    const strArg = i => { if (args[i].t !== 'str') throw typeErr(`must be str, not ${tn(args[i])}`); return args[i].v; };
+    switch (name) {
+      case 'lower': argc(0); return mk.str(s.v.toLowerCase());
+      case 'upper': argc(0); return mk.str(s.v.toUpperCase());
+      case 'strip': argc(0); return mk.str(s.v.trim());
+      case 'isdigit': argc(0); return mk.bool(/^\d+$/.test(s.v));
+      case 'isalpha': argc(0); return mk.bool(/^[A-Za-z]+$/.test(s.v));
+      case 'startswith': argc(1); return mk.bool(s.v.startsWith(strArg(0)));
+      case 'endswith': argc(1); return mk.bool(s.v.endsWith(strArg(0)));
+      case 'find': argc(1); return mk.int(s.v.indexOf(strArg(0)));
+      case 'index': { argc(1); const k = s.v.indexOf(strArg(0)); if (k < 0) throw new PyError('ValueError', 'substring not found'); return mk.int(k); }
+      case 'count': argc(1); return mk.int(s.v.split(strArg(0)).length - 1);
+      case 'replace': argc(2); return mk.str(s.v.split(strArg(0)).join(strArg(1)));
+      case 'split': { argc(0, 1); const parts = args.length ? s.v.split(strArg(0)) : s.v.trim().split(/\s+/).filter(Boolean); return mk.list(parts.map(mk.str)); }
+      case 'join': {
+        argc(1); const acc = iterAcc(args[0]), xs = [];
+        for (let i = 0; i < acc.len(); i++) { const x = acc.at(i); if (x.t !== 'str') throw typeErr(`sequence item ${i}: expected str instance, ${tn(x)} found`); xs.push(x.v); }
+        return mk.str(xs.join(s.v));
+      }
+    }
+    throw new PyError('AttributeError', `'${tn(s)}' object has no attribute '${name}'`);
+  }
+  function callBuiltin(name, args) {
+    const need = (lo, hi = lo) => { if (args.length < lo || args.length > hi) throw typeErr(`${name}() takes ${lo === hi ? `exactly ${lo}` : `${lo} to ${hi}`} argument${hi === 1 ? '' : 's'} (${args.length} given)`); };
+    const items = o => { const a = iterAcc(o), r = []; for (let i = 0; i < a.len(); i++) r.push(a.at(i)); return r; };
+    switch (name) {
+      case 'print': out.push(args.map(pyStr).join(' ')); return mk.none();
+      case 'id': need(1); assignIds([args[0]]); return mk.int(args[0].id ?? 0);
+      case 'len': need(1); return mk.int(seqLen(args[0]));
+      case 'range': {
+        need(1, 3); const n = args.map(a => intArg(a));
+        const [a, b, c] = n.length === 1 ? [0, n[0], 1] : [n[0], n[1], n[2] ?? 1];
+        if (c === 0) throw new PyError('ValueError', 'range() arg 3 must not be zero');
+        return mk.range(a, b, c);
+      }
+      case 'min': case 'max': {
+        if (!args.length) throw typeErr(`${name} expected at least 1 argument, got 0`);
+        const xs = args.length === 1 ? items(args[0]) : args;
+        if (!xs.length) throw new PyError('ValueError', `${name}() arg is an empty sequence`);
+        return xs.reduce((m, x) => ((name === 'min' ? lt(x, m, '<') : lt(m, x, '<')) ? x : m));
+      }
+      case 'sum': { need(1); let t = mk.int(0); for (const x of items(args[0])) t = arith('+', t, x); return t; }
+      case 'sorted': need(1); return mk.list(sortKey(items(args[0])));
+      case 'list': need(0, 1); return mk.list(args.length ? items(args[0]) : []);
+      case 'str': need(1); return mk.str(pyStr(args[0]));
+      case 'abs': need(1); if (!isNum(args[0])) throw typeErr(`bad operand type for abs(): '${tn(args[0])}'`); return args[0].t === 'float' ? mk.float(Math.abs(args[0].v)) : mk.int(Math.abs(numVal(args[0])));
+      case 'int': {
+        need(1); const a = args[0];
+        if (a.t === 'str') { if (!/^\s*[-+]?\d+\s*$/.test(a.v)) throw new PyError('ValueError', `invalid literal for int() with base 10: ${repr(a)}`); return mk.int(parseInt(a.v, 10)); }
+        if (!isNum(a)) throw typeErr(`int() argument must be a string or a number, not '${tn(a)}'`);
+        return mk.int(Math.trunc(numVal(a)));
+      }
+    }
+  }
+
+  /* ---------- snapshots ---------- */
+  function snapObj(o, temp) {
+    const r = { t: o.t, id: o.id, temp };
+    if (o.t === 'list') r.items = o.items.map(x => x.id);
+    else { r.v = repr(o); if (o.t === 'str') r.raw = o.v; }
+    return r;
+  }
+  function capture(line, note, extra) {
+    const reach = new Set(), rets = new Set();
+    const visit = set => function v(o) { if (!o || reach.has(o) || rets.has(o)) return; set.add(o); if (o.t === 'list') o.items.forEach(v); };
+    stack.forEach(f => f.vars.forEach(visit(reach)));
+    extraRoots.forEach(visit(rets));
+    const temps = created.filter(o => o.t === 'list' && !reach.has(o) && !rets.has(o));
+    assignIds([...reach, ...rets, ...temps]);
+    const heap = {};
+    reach.forEach(o => { heap[o.id] = snapObj(o, false); });
+    rets.forEach(o => { heap[o.id] = Object.assign(snapObj(o, false), { ret: true }); });
+    const tvisit = o => { if (!o || heap[o.id]) return; heap[o.id] = snapObj(o, true); if (o.t === 'list') o.items.forEach(tvisit); };
+    temps.forEach(tvisit);
+    created = [];
+    let loop = null;
+    const L = loops[loops.length - 1];
+    if (L) {
+      const n = L.acc.len(), cells = [], ids = [];
+      for (let i = 0; i < Math.min(n, 40); i++) { const x = L.acc.at(i); cells.push(repr(x)); ids.push(L.obj.t === 'list' ? x.id ?? null : null); }
+      loop = { label: L.label, var: L.var, pos: L.pos, cells, ids, len: n };
+    }
+    return Object.assign({
+      line, note, heap, loop,
+      frames: stack.map(f => ({ fid: f.fid, name: f.name, vars: [...f.vars].map(([n, o]) => [n, o.id]) })),
+      out: out.slice(-200), ended: false, err: false
+    }, extra || {});
+  }
+  const valNote = (e, v) => { assignIds([...created.filter(o => o.t === 'list'), v]); return { e, r: repr(v), id: v.id }; };
+
+  /* render "num < threshold" as "1 < 3" without allocating anything */
+  function quietObj(n) {
+    if (n.t === 'name') return lookupQuiet(n.id);
+    if (n.t === 'index') {
+      const o = quietObj(n.o), i = n.i.t === 'lit' && n.i.k === 'int' ? n.i.v : (quietObj(n.i) || {}).v;
+      if (!o || typeof i !== 'number') return null;
+      if (o.t === 'list') { const k = i < 0 ? i + o.items.length : i; return o.items[k] || null; }
+      if (o.t === 'str') { const k = i < 0 ? i + o.v.length : i; return o.v[k] !== undefined ? { t: 'str', v: o.v[k] } : null; }
+    }
+    return null;
+  }
+  function sub(n) {
+    const wrap = s => (n.paren ? `(${s})` : s);
+    switch (n.t) {
+      case 'lit': return n.src;
+      case 'name': case 'index': { const o = quietObj(n); if (!o || ['func', 'builtin'].includes(o.t)) return n.src; const r = repr(o); return r.length <= 14 ? r : n.src; }
+      case 'call':
+        if (n.f.t === 'name' && n.f.id === 'len' && n.args.length === 1) { const o = quietObj(n.args[0]); if (o && ['list', 'str'].includes(o.t)) return String(o.t === 'list' ? o.items.length : o.v.length); }
+        return n.src;
+      case 'bin': case 'bool': return wrap(`${sub(n.l)} ${n.op} ${sub(n.r)}`);
+      case 'cmp': return wrap(n.items.map((x, k) => (k ? `${n.ops[k - 1]} ` : '') + sub(x)).join(' '));
+      case 'not': return wrap(`not ${sub(n.x)}`);
+    }
+    return n.src;
+  }
+  const condNote = (cond, v) => { let e = ''; try { e = sub(cond); } catch (x) { e = ''; } const r = repr(v); return { e: e === r ? '' : e, r }; };
+
+  /* ---------- execution ---------- */
+  function* ev(n) {
+    switch (n.t) {
+      case 'lit': return n.k === 'int' ? mk.int(n.v) : n.k === 'float' ? mk.float(n.v) : n.k === 'str' ? mk.str(n.v) : n.k === 'bool' ? mk.bool(n.v) : mk.none();
+      case 'name': return lookup(n.id);
+      case 'list': { const items = []; for (const e of n.items) items.push(yield* ev(e)); return mk.list(items); }
+      case 'bool': { const l = yield* ev(n.l); if (n.op === 'and' ? !truthy(l) : truthy(l)) return l; return yield* ev(n.r); }
+      case 'not': return mk.bool(!truthy(yield* ev(n.x)));
+      case 'cmp': {
+        let left = yield* ev(n.items[0]);
+        for (let k = 0; k < n.ops.length; k++) { const right = yield* ev(n.items[k + 1]); if (!compare(n.ops[k], left, right)) return mk.bool(false); left = right; }
+        return mk.bool(true);
+      }
+      case 'bin': { const a = yield* ev(n.l); const b = yield* ev(n.r); return arith(n.op, a, b); }
+      case 'unary': {
+        const v = yield* ev(n.x);
+        if (!isNum(v)) throw typeErr(`bad operand type for unary ${n.op}: '${tn(v)}'`);
+        if (n.op === '+') return v;
+        return v.t === 'float' ? mk.float(-v.v) : mk.int(-numVal(v));
+      }
+      case 'index': { const o = yield* ev(n.o); const i = yield* ev(n.i); return getItem(o, i); }
+      case 'slice': {
+        const o = yield* ev(n.o);
+        const part = function* (x) { if (!x) return null; const v = yield* ev(x); if (v.t === 'none') return null; if (!isIntish(v)) throw typeErr('slice indices must be integers or None'); return numVal(v); };
+        const a = yield* part(n.a), b = yield* part(n.b), c = yield* part(n.c);
+        if (o.t === 'list') return mk.list(sliceIdx(o.items.length, a, b, c).map(i => o.items[i]));
+        if (o.t === 'str') return mk.str(sliceIdx(o.v.length, a, b, c).map(i => o.v[i]).join(''));
+        throw typeErr(`'${tn(o)}' object is not subscriptable`);
+      }
+      case 'attr': return getAttr(yield* ev(n.o), n.name);
+      case 'call': {
+        const f = yield* ev(n.f), args = [];
+        for (const a of n.args) args.push(yield* ev(a));
+        if (f.t === 'builtin') return callBuiltin(f.name, args);
+        if (f.t === 'method') return callMethod(f, args);
+        if (f.t === 'func') return yield* callUser(f, args, n);
+        throw typeErr(`'${tn(f)}' object is not callable`);
+      }
+    }
+    throw syntax();
+  }
+  function* callUser(f, args, callNode) {
+    if (args.length !== f.params.length) throw typeErr(`${f.name}() takes ${f.params.length} positional argument${f.params.length === 1 ? '' : 's'} but ${args.length} ${args.length === 1 ? 'was' : 'were'} given`);
+    if (stack.length > 60) throw new PyError('RecursionError', 'maximum recursion depth exceeded');
+    const rec = recs[recs.length - 1]; if (rec) rec.called = true;
+    const callerLine = curLine;
+    const frame = { fid: fidN++, name: f.name, vars: new Map() };
+    f.params.forEach((p, i) => frame.vars.set(p, args[i]));
+    stack.push(frame);
+    yield capture(callerLine, { text: `new frame for ${f.name}: parameters get the ids of the arguments` });
+    let ret = null;
+    try { yield* block(f.body); }
+    catch (e) { if (e instanceof ReturnSig) ret = e.v; else throw e; }
+    if (!ret) ret = mk.none();
+    stack.pop(); curLine = callerLine;
+    extraRoots.push(ret);
+    const label = callNode.src.length > 30 ? `${f.name}(…)` : callNode.src;
+    yield capture(callerLine, valNote(label, ret));
+    extraRoots.pop();
+    return ret;
+  }
+  function begin(ln) { curLine = ln; const r = { ln, pre: capture(ln, null), called: false }; recs.push(r); return r; }
+  function* end(r, note) { recs.pop(); curLine = r.ln; if (!r.called) { r.pre.note = note; yield r.pre; } }
+  function* assignTo(t, v) {
+    if (t.t === 'name') { setVar(t.id, v); roles.rebind.add(curLine); return; }
+    const o = yield* ev(t.o); const i = yield* ev(t.i); setItem(o, i, v);
+  }
+  function* block(stmts) { for (const s of stmts) yield* stmt(s); }
+  function* stmt(s) {
+    switch (s.k) {
+      case 'doc': return;
+      case 'def': funcs.set(s.name, { t: 'func', name: s.name, params: s.params, body: s.body }); return;
+      case 'pass': { const r = begin(s.ln); yield* end(r, null); return; }
+      case 'break': case 'continue': { const r = begin(s.ln); yield* end(r, null); throw s.k === 'break' ? BREAK : CONT; }
+      case 'expr': {
+        const r = begin(s.ln); const v = yield* ev(s.expr);
+        const isPrint = s.expr.t === 'call' && s.expr.f.t === 'name' && s.expr.f.id === 'print';
+        yield* end(r, isPrint ? null : v.t === 'none' ? { e: '', r: 'None' } : valNote('', v)); return;
+      }
+      case 'assign': {
+        const r = begin(s.ln); const v = yield* ev(s.value);
+        yield* assignTo(s.target, v);
+        yield* end(r, valNote(s.value.t === 'name' ? s.value.id : '', v)); return;
+      }
+      case 'aug': {
+        const r = begin(s.ln); const rhs = yield* ev(s.value); const op = s.op[0]; let nv;
+        if (s.target.t === 'name') {
+          const cur = lookup(s.target.id);
+          if (op === '+' && cur.t === 'list') { extendList(cur, rhs); nv = cur; } else nv = arith(op, cur, rhs);
+          setVar(s.target.id, nv); roles.rebind.add(s.ln);
+        } else {
+          const o = yield* ev(s.target.o); const i = yield* ev(s.target.i);
+          nv = arith(op, getItem(o, i), rhs); setItem(o, i, nv);
+        }
+        yield* end(r, valNote('', nv)); return;
+      }
+      case 'return': {
+        const r = begin(s.ln); const v = s.value ? yield* ev(s.value) : mk.none();
+        yield* end(r, valNote('', v)); throw new ReturnSig(v);
+      }
+      case 'if': {
+        for (const br of s.branches) {
+          const r = begin(br.ln); const c = yield* ev(br.cond);
+          yield* end(r, condNote(br.cond, c));
+          if (truthy(c)) { yield* block(br.body); return; }
+        }
+        if (s.orelse) yield* block(s.orelse);
+        return;
+      }
+      case 'while': {
+        for (;;) {
+          const r = begin(s.ln); const c = yield* ev(s.cond);
+          yield* end(r, condNote(s.cond, c));
+          if (!truthy(c)) break;
+          try { yield* block(s.body); } catch (e) { if (e === BREAK) break; if (e !== CONT) throw e; }
+        }
+        return;
+      }
+      case 'for': {
+        curLine = s.ln; const r = { ln: s.ln, called: false }; recs.push(r);
+        const it = yield* ev(s.iter); recs.pop();
+        const acc = iterAcc(it);
+        const L = { obj: it, acc, label: `for ${s.target} in ${s.iter.src}`, var: s.target, pos: 0 };
+        loops.push(L);
+        try {
+          for (let i = 0; ; i++) {
+            curLine = s.ln; L.pos = i;
+            if (i >= acc.len()) { yield capture(s.ln, { text: 'no more items, so the loop ends' }); break; }
+            const item = acc.at(i);
+            yield capture(s.ln, valNote(s.target, item));
+            setVar(s.target, item); roles.rebind.add(s.ln);
+            try { yield* block(s.body); } catch (e) { if (e === BREAK) break; if (e !== CONT) throw e; }
+          }
+        } finally { loops.pop(); }
+        return;
+      }
+    }
+  }
+  function* run() {
+    try {
+      yield* block(prog);
+      yield capture(-1, null, { ended: true });
+    } catch (e) {
+      if (e instanceof ReturnSig) e = syntax("'return' outside function");
+      if (e === BREAK || e === CONT) e = syntax(`'${e.sig}' outside loop`);
+      if (!(e instanceof PyError)) throw e;
+      const ln = e.line ?? curLine;
+      yield capture(ln, { e: '', r: e.pyName, err: true });
+      out.push(e.message ? `${e.pyName}: ${e.message}` : e.pyName);
+      yield capture(ln, null, { ended: true, err: true });
+    }
+  }
+  return { run, roles };
+}
+
+/* ===== Programs ===== */
+const W16_LABELS = ['(a)', '(b)', '(c)', '(d)', '(e)'];
+const gv = (snap, name) => { for (const f of snap.frames) for (const [n, id] of f.vars) if (n === name) return id; return undefined; };
+function heapRepr(snap, id) {
+  const o = snap.heap[id];
+  if (!o) return undefined;
+  return o.t === 'list' ? '[' + o.items.map(i => heapRepr(snap, i)).join(', ') + ']' : o.v;
+}
+
+const COLLECT_HEAD = [
+  'def collect_below_threshold(',
+  '    nums: list[int], threshold: int',
+  ') -> list[int]:',
+  '    """Return a new list of the numbers in nums',
+  '    that are below threshold.',
+  '    """'
+];
+const COLLECT_PRESETS = [
+  { label: '[1, 2, 3, 4], 3', vals: { nums: '[1, 2, 3, 4]', threshold: '3' } },
+  { label: '[1, 2, 108, 3, 4], 50', vals: { nums: '[1, 2, 108, 3, 4]', threshold: '50' } },
+  { label: '[], 7', vals: { nums: '[]', threshold: '7' } }
+];
+
+const PROGRAMS = {
+  listdemo: {
+    group: 'demo', label: 'list_demo.py',
+    about: 'Your lecture file. Watch which lines give a variable a new id and which ones change the list that every alias shares.',
+    lines: [
+      'list1 = [1, 2, 3]', 'list2 = list1', 'list1.append(4)', 'print(list1)', 'print(list2)', 'print(id(list1))', 'print(id(list2))', '',
+      'list1 = [10, 11, 12]', 'list2 = list1', 'list1 = list1 + [13]', 'print(list1)', 'print(list2)', 'print(id(list1))', 'print(id(list2))', '',
+      'print(id(list1))', 'print(id(list1[:]))'
+    ], fields: {}
+  },
+  aliasint: {
+    group: 'demo', label: 'b = a (int)',
+    about: 'From the memory-model drawing. An int can’t change, so <code>b = 100</code> gives b a new id and a keeps its old one.',
+    lines: ['a = 1', 'b = a', 'b = 100', 'print(a == b)'], fields: {}
+  },
+  aliaslist: {
+    group: 'demo', label: 'b = a (list)',
+    about: 'From the memory-model drawing. a and b hold the same id, so <code>b[1] = 100</code> changes the list a refers to as well.',
+    lines: ['a = [1, 5]', 'b = a', 'b[1] = 100', 'print(a)', 'print(a == b)'], fields: {}
+  },
+  loopvar: {
+    group: 'demo', label: 'Loop variable',
+    about: 'Rebinding the loop variable <code>g</code> never touches the list. Assigning to <code>grades[i]</code> does.',
+    lines: [
+      'grades = [45, 50, 55]', 'for g in grades:', '    g = g + 10', 'print(grades)', '',
+      'for i in range(len(grades)):', '    grades[i] = grades[i] + 10', 'print(grades)'
+    ], fields: {}
+  },
+
+  loop1: {
+    group: 'loop', label: '1 Values',
+    about: '<b>Way 1: loop over the values.</b> <code>for &lt;meaningful name&gt; in &lt;list&gt;:</code> Use this way when you can, because it keeps the code simple. Each time around, <code>num</code> refers to the next item.',
+    lines: [...COLLECT_HEAD,
+      '    below = []',
+      '    for num in nums:',
+      '        if num < threshold:',
+      '            below.append(num)',
+      '    return below',
+      '',
+      'print(collect_below_threshold({nums}, {threshold}))'
+    ],
+    fields: { nums: { kind: 'expr', def: '[1, 2, 108, 3, 4]' }, threshold: { kind: 'expr', def: '50' } },
+    presets: COLLECT_PRESETS
+  },
+  loop2: {
+    group: 'loop', label: '2 Indexes (for)', track: { seq: 'grades', idx: 'i' },
+    about: '<b>Way 2: loop over the indexes with a for loop.</b> <code>for i in range(len(&lt;list&gt;)):</code> Use this when you need to change the list, or need the index for something else, like reaching items in a parallel list.',
+    lines: [
+      'def scale_midterm_grades(',
+      '    grades: list[int], multiplier: int, bonus: int',
+      ') -> None:',
+      '    """Modify each grade in grades: multiply it by',
+      '    multiplier, add bonus, and cap it at 100.',
+      '    """',
+      '    for i in range(len(grades)):',
+      '        grades[i] = grades[i] * multiplier + bonus',
+      '        if grades[i] > 100:',
+      '            grades[i] = 100',
+      '',
+      'grades = {grades}',
+      'scale_midterm_grades(grades, {multiplier}, {bonus})',
+      'print(grades)'
+    ],
+    fields: { grades: { kind: 'expr', def: '[45, 50, 55, 95]' }, multiplier: { kind: 'expr', def: '1' }, bonus: { kind: 'expr', def: '10' } }
+  },
+  loop3: {
+    group: 'loop', label: '3 Indexes (while)', track: { seq: 's', idx: 'i' },
+    about: '<b>Way 3: loop over the indexes with a while loop.</b> <code>i = 0</code>, then <code>while &lt;condition&gt;:</code>, then increase <code>i</code>. Use this when you don’t know how many times to repeat, or when you want to stop early.',
+    lines: [
+      'def find_letter_n_times(',
+      '    s: str, letter: str, n: int',
+      ') -> str:',
+      '    """Return the smallest prefix of s that',
+      '    contains letter n times.',
+      '',
+      '    Precondition: letter occurs at least n',
+      '    times in s',
+      '    """',
+      '    i = 0',
+      '    count = 0',
+      '    while count < n:',
+      '        if s[i] == letter:',
+      '            count = count + 1',
+      '        i = i + 1',
+      '    return s[:i]',
+      '',
+      'print(find_letter_n_times({s}, {letter}, {n}))'
+    ],
+    fields: { s: { kind: 'expr', def: "'Lollipop'" }, letter: { kind: 'expr', def: "'o'" }, n: { kind: 'expr', def: '2' } },
+    presets: [
+      { label: "'Lollipop', 'o', 2", vals: { s: "'Lollipop'", letter: "'o'", n: '2' } },
+      { label: "'Mississippi', 's', 3", vals: { s: "'Mississippi'", letter: "'s'", n: '3' } },
+      { label: "'banana', 'n', 1", vals: { s: "'banana'", letter: "'n'", n: '1' } }
+    ]
+  },
+
+  w16q1: {
+    group: 'w16', label: 'Q1',
+    about: 'Which fragments modify the list that <code>a</code> refers to, while the id stored in <code>a</code> stays the same? Pick each fragment from the menu and step through.',
+    lines: ['a = [1, 0]', '{frag}', 'print(a)'],
+    fields: { frag: { kind: 'choice', options: ['a.append(8)', 'a.insert(0, -1)', 'a = a + [2]', 'a = [7, 8, 9]', 'a[1] = 3'], def: 'a.append(8)' } },
+    answer: 'Answer: (a), (b) and (e). Fragments (c) and (d) build a new list and give a a new id.',
+    check(steps, s) {
+      const before = steps.find(st => st.line === 1);
+      if (!before || s.err) return '';
+      const id0 = gv(before, 'a'), id1 = gv(s, 'a');
+      if (id0 === id1) return heapRepr(before, id0) !== heapRepr(s, id1)
+        ? `✓ a still holds id${id0}, and that list changed. This fragment modifies the list.`
+        : `a still holds id${id0}, and the list didn’t change.`;
+      return `✗ a now holds id${id1}, a different object. The list at id${id0} was not modified.`;
+    }
+  },
+  w16q2: {
+    group: 'w16', label: 'Q2',
+    about: 'Which expressions are True after these lines run? Pick each one, then watch what <code>b</code> ends up referring to.',
+    lines: ['a = [1, 0, 8]', 'b = a.sort()', 'print({check})'],
+    fields: { check: { kind: 'choice', options: ['a == [1, 0, 8]', 'a == [0, 1, 8]', 'b == [1, 0, 8]', 'b == [0, 1, 8]'], def: 'a == [1, 0, 8]' } },
+    answer: 'Answer: (b) only. a.sort() sorts the list in place and returns None, so b refers to None.'
+  },
+  w16q3: {
+    group: 'w16', label: 'Q3',
+    about: 'Which expressions are True after these lines run? Pick each one from the menu.',
+    lines: ['a = [0, 1, 2]', 'b = a', 'b[2] = 100', 'print({check})'],
+    fields: { check: { kind: 'choice', options: ['a == [0, 1, 2] and b == [0, 1, 100]', 'a == [0, 1, 2] and b == [0, 100, 2]', 'a == [0, 1, 100] and b == [0, 1, 100]', 'id(a) == id(b)'], def: 'a == [0, 1, 2] and b == [0, 1, 100]' } },
+    answer: 'Answer: (c) and (d). a and b are aliases for one list, so the change through b shows up in a.'
+  },
+  w16q4: {
+    group: 'w16', label: 'Q4',
+    about: 'Match each loop to what it prints. The strip above the memory model shows every value the range produces.',
+    lines: ['for i in {rng}:', '    print(i)'],
+    fields: { rng: { kind: 'choice', options: ['range(6)', 'range(1, 12, 2)', 'range(1, 6)', 'range(6, 0, -1)'], def: 'range(6)' } },
+    answer: 'range(6) prints 0 to 5. range(1, 12, 2) prints 1, 3, 5, 7, 9, 11. range(1, 6) prints 1 to 5. range(6, 0, -1) prints 6 down to 1.'
+  },
+
+  w17q1: {
+    group: 'w17', label: 'Q1', compare: true,
+    about: 'Fill in the body, then try each docstring example.',
+    lines: [...COLLECT_HEAD,
+      '    below = []',
+      '    for num in nums:',
+      '        if {test}:',
+      '            {action}',
+      '    return below',
+      '',
+      'print(collect_below_threshold({nums}, {threshold}))'
+    ],
+    fields: {
+      test: { kind: 'expr', def: '', sol: 'num < threshold', blank: true },
+      action: { kind: 'expr', def: '', sol: 'below.append(num)', blank: true },
+      nums: { kind: 'expr', def: '[1, 2, 3, 4]' }, threshold: { kind: 'expr', def: '3' }
+    },
+    presets: COLLECT_PRESETS,
+    answer: 'Docstring examples: [1, 2], then [1, 2, 3, 4], then [].'
+  },
+  w17q2: {
+    group: 'w17', label: 'Q2', compare: true, track: { seq: 'grades', idx: 'i' },
+    about: 'Fill in the body. The function returns None: it changes the list the caller passed in, so watch both frames point at the same id. Ways to loop 2 shows a finished version.',
+    lines: [
+      'def scale_grades(',
+      '    grades: list[int], multiplier: int, bonus: int',
+      ') -> None:',
+      '    """Multiply each grade by multiplier, add',
+      '    bonus, and cap at 100."""',
+      '    for i in range({rng}):',
+      '        grades[i] = {newval}',
+      '        if {cap}:',
+      '            grades[i] = 100',
+      '',
+      'grades = {grades}',
+      'scale_grades(grades, {multiplier}, {bonus})',
+      'print(grades)'
+    ],
+    fields: {
+      rng: { kind: 'expr', def: '', sol: 'len(grades)', blank: true },
+      newval: { kind: 'expr', def: '', sol: 'grades[i] * multiplier + bonus', blank: true },
+      cap: { kind: 'expr', def: '', sol: 'grades[i] > 100', blank: true },
+      grades: { kind: 'expr', def: '[45, 50, 55, 95]' }, multiplier: { kind: 'expr', def: '1' }, bonus: { kind: 'expr', def: '10' }
+    },
+    answer: 'Docstring example: grades becomes [55, 60, 65, 100].'
+  }
+};
+const ROLES = ['rebind', 'mutate', 'newlist'];
+const MAX_PRERUN = 3000;
+
+function runToEnd(lines) {
+  try {
+    const g = makeVM(parseProgram(lines)).run(); let last = null, n = 0;
+    for (const st of g) { last = st; if (++n > 20000) return null; }
+    return last ? last.out : null;
+  } catch (e) { return null; }
+}
+</script>
+<script>
+/* ===== Page ===== */
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const DISPLAY_KW = new Set(['def', 'for', 'while', 'if', 'elif', 'else', 'return', 'and', 'or', 'not', 'in', 'is', 'True', 'False', 'None', 'pass', 'break', 'continue']);
+const clip = (s, n = 34) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+
+const app = $('#app'), linesEl = $('#lines'), memEl = $('#mem'), stateEl = $('#state');
+const cur = { key: '', ex: null, vals: {}, steps: [], k: 0, gen: null, vm: null, done: true, status: '', solOut: null, edit: false, names: [] };
+const saved = {}, answerBackup = {}, answersOn = {}, custom = {};
+let lineEls = [], hlEl = null, hover = null, lock = null, showRes = true;
+
+/* ---------- code panel ---------- */
+const fill = (ex, vals) => ex.lines.map(t => t.replace(/\{(\w+)\}/g, (m, id) => vals[id] ?? ''));
+const currentLines = () => custom[cur.key] || fill(cur.ex, cur.vals);
+function varNames(lines) {
+  const names = new Set();
+  for (const l of lines) { const m = l.match(/^\s*(?:for\s+)?([A-Za-z_]\w*)\s*(?:=(?!=)|\+=|-=|\*=|in\b)/); if (m) names.add(m[1]); }
+  for (const m of lines.join('\n').matchAll(/\bdef\s+\w+\s*\(([^)]*)\)/g))
+    m[1].split(',').forEach(p => { const n = p.split(':')[0].trim(); if (/^[A-Za-z_]\w*$/.test(n)) names.add(n); });
+  DISPLAY_KW.forEach(k => names.delete(k));
+  return [...names];
+}
+function highlight(src, vars) {
+  const re = /'[^']*'|"[^"]*"|#.*|[A-Za-z_]\w*|\d+|\s+|./g;
+  let out = '', prev = '';
+  for (const t of src.match(re) || []) {
+    if (t[0] === "'" || t[0] === '"' || t[0] === '#') out += `<span class="s">${esc(t)}</span>`;
+    else if (/^[A-Za-z_]/.test(t)) {
+      if (prev === '.') out += esc(t);
+      else if (DISPLAY_KW.has(t)) out += `<span class="k">${t}</span>`;
+      else if (vars.includes(t)) out += `<span class="tok" data-var="${t}">${t}</span>`;
+      else out += esc(t);
+    } else out += esc(t);
+    if (!/^\s+$/.test(t)) prev = t;
+  }
+  return out;
+}
+/* docstrings can run across lines: colour them as strings and send everything else to codeFn */
+function docAware(text, inDoc, codeFn) {
+  let html = '', rest = text;
+  const str = t => `<span class="s">${esc(t)}</span>`;
+  for (;;) {
+    const j = rest.indexOf('"""', inDoc ? 0 : undefined);
+    if (inDoc) {
+      if (j < 0) return [html + str(rest), true];
+      html += str(rest.slice(0, j + 3)); rest = rest.slice(j + 3); inDoc = false;
+    } else {
+      if (j < 0) return [html + codeFn(rest), false];
+      html += codeFn(rest.slice(0, j)) + str('"""'); rest = rest.slice(j + 3); inDoc = true;
+    }
+  }
+}
+function lineHTML(tpl, ex) {
+  return tpl.split(/\{(\w+)\}/).map((p, i) => {
+    if (i % 2 === 0) return highlight(p, cur.names);
+    const f = ex.fields[p];
+    if (f.kind === 'choice')
+      return `<select class="arg" data-f="${p}" id="f-${p}" aria-label="Choose a fragment">${f.options.map((o, j) => `<option value="${esc(o)}">${ex.group === 'w16' ? W16_LABELS[j] + ' ' : ''}${esc(o)}</option>`).join('')}</select>`;
+    return `<input class="arg${f.blank ? ' blank' : ''}" data-f="${p}" id="f-${p}" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="${p}">`;
+  }).join('');
+}
+function buildCode() {
+  const ex = cur.ex, raw = custom[cur.key];
+  cur.names = varNames(raw || fill(ex, Object.fromEntries(Object.entries(ex.fields).map(([k, f]) => [k, f.sol || f.def]))));
+  linesEl.innerHTML = '<div class="hl" aria-hidden="true"></div>';
+  hlEl = $('.hl', linesEl);
+  let inDoc = false;
+  lineEls = (raw || ex.lines).map((tpl, i) => {
+    const [code, nd] = docAware(tpl, inDoc, part => (raw ? highlight(part, cur.names) : lineHTML(part, ex)));
+    inDoc = nd;
+    const d = document.createElement('div');
+    d.className = 'line';
+    d.innerHTML = `<span class="ln">${i + 1}</span><span class="rc"></span><span class="src">${code}</span><span class="note"></span>`;
+    linesEl.appendChild(d);
+    return d;
+  });
+  $$('.arg', linesEl).forEach(inp => {
+    inp.value = cur.vals[inp.dataset.f];
+    if (inp.tagName === 'INPUT') sizeInput(inp);
+    inp.addEventListener(inp.tagName === 'SELECT' ? 'change' : 'input', () => {
+      if (inp.tagName === 'INPUT') { inp.value = inp.value.replace(/[\r\n]/g, ''); sizeInput(inp); }
+      cur.vals[inp.dataset.f] = inp.value;
+      load();
+    });
+  });
+}
+function sizeInput(inp) {
+  const n = inp.value.length;
+  inp.style.width = `${n ? n + 0.6 : (inp.classList.contains('blank') ? 7 : 1)}ch`;
+}
+function updateBadges() {
+  const roles = cur.vm ? cur.vm.roles : null;
+  lineEls.forEach((el, i) => {
+    const mine = roles ? ROLES.filter(r => roles[r].has(i)) : [];
+    el.dataset.roles = mine.join(' ');
+    $('.rc', el).innerHTML = mine.map(r => `<i data-recipe="${r}">${ROLES.indexOf(r) + 1}</i>`).join('');
+  });
+}
+function startEdit() {
+  cur.edit = true;
+  linesEl.innerHTML = '';
+  const ta = document.createElement('textarea');
+  ta.className = 'editor'; ta.id = 'editor'; ta.spellcheck = false; ta.setAttribute('aria-label', 'Edit the code');
+  ta.value = currentLines().join('\n');
+  ta.rows = Math.max(10, ta.value.split('\n').length + 2);
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Tab') { e.preventDefault(); const a = ta.selectionStart; ta.setRangeText('    ', a, ta.selectionEnd, 'end'); }
+  });
+  linesEl.appendChild(ta);
+  ta.focus();
+  $('#edit').textContent = 'Run this code';
+}
+$('#edit').onclick = () => {
+  if (!cur.edit) { startEdit(); return; }
+  custom[cur.key] = $('#editor').value.replace(/\s+$/, '').split('\n');
+  cur.edit = false; $('#edit').textContent = 'Edit code';
+  setAbout(); buildCode(); load();
+};
+
+/* ---------- memory model ---------- */
+const refHTML = (id, cls = '') => `<span class="ref${cls}" data-id="${id}" tabindex="0">id${id}</span>`;
+function objHTML(x, prevObj) {
+  const o = x.o, state = x.state;
+  let inner;
+  if (o.t === 'list') {
+    const pi = prevObj && prevObj.items;
+    inner = o.items.length ? `<div class="slots">${o.items.map((id, j) => {
+      const old = pi ? pi[j] : undefined, chg = pi && old !== id && state !== 'new';
+      return `<div class="slot"><span class="si">${j}</span><span class="refs">${chg && old !== undefined ? refHTML(old, ' old') : ''}${refHTML(id, chg ? ' chg' : '')}</span></div>`;
+    }).join('')}</div>` : '<span class="emptylist">empty</span>';
+  } else inner = esc(o.v);
+  const cap = state === 'gone' ? 'nothing refers to this now' : o.temp ? 'temporary' : o.ret ? 'returned value' : '';
+  return `<div class="obj ${o.t}${state ? ' ' + state : ''}${o.temp ? ' loose' : ''}" data-id="${o.id}">
+    <span class="olabel">id${o.id}: ${TYPE[o.t]}</span><div class="obox">${inner}</div>${cap ? `<span class="ocap">${cap}</span>` : ''}</div>`;
+}
+/* Objects sit in one column in id order, so nothing jumps around between steps.
+   Each list gets its own group, with the objects it holds in a row underneath it. */
+function heapGroups(s, prev) {
+  const all = new Map();
+  for (const [id, o] of Object.entries(s.heap)) all.set(+id, { o, state: prev && !(id in prev.heap) ? 'new' : '' });
+  if (prev) for (const [id, o] of Object.entries(prev.heap)) if (!(id in s.heap) && !o.temp) all.set(+id, { o, state: 'gone' });
+  const lists = [...all.values()].filter(x => x.o.t === 'list').sort((a, b) => a.o.id - b.o.id);
+  const placed = new Set(lists.map(x => x.o.id)), groups = [];
+  const isGone = id => all.get(id)?.state === 'gone';
+  for (const L of lists) {
+    const elems = [], pItems = (prev && prev.heap[L.o.id] && prev.heap[L.o.id].items) || [];
+    const take = id => { if (!placed.has(id) && all.has(id)) { placed.add(id); elems.push(all.get(id)); } };
+    L.o.items.forEach((id, j) => { if (pItems[j] !== undefined && pItems[j] !== id && isGone(pItems[j])) take(pItems[j]); take(id); });
+    pItems.forEach(id => { if (isGone(id)) take(id); });
+    groups.push({ head: L, elems });
+  }
+  for (const x of all.values()) if (!placed.has(x.o.id)) groups.push({ head: x, elems: [] });
+  return groups.sort((a, b) => a.head.o.id - b.head.o.id);
+}
+function renderMem(s, prev) {
+  if (!s.frames.length) { memEl.innerHTML = '<p class="memempty">Nothing in memory yet.</p>'; return; }
+  const prevVars = new Map();
+  if (prev) prev.frames.forEach(f => f.vars.forEach(([n, id]) => prevVars.set(f.fid + ':' + n, id)));
+  const frames = s.frames.map((f, fi) => {
+    const rows = f.vars.map(([n, id]) => {
+      const old = prevVars.get(f.fid + ':' + n), chg = prev && old !== id;
+      return `<div class="vrow" data-var="${esc(n)}"><span class="vname" tabindex="0">${esc(n)}</span><span class="refs">${chg && old !== undefined ? refHTML(old, ' old') : ''}${refHTML(id, chg ? ' chg' : '')}</span></div>`;
+    }).join('');
+    return `<div class="frame${fi === s.frames.length - 1 ? ' active' : ''}"><div class="fname">${esc(f.name)}</div>${rows || '<div class="empty">no variables yet</div>'}</div>`;
+  }).join('');
+  const prevObj = id => prev && prev.heap[id];
+  const heap = heapGroups(s, prev).map(g => `<div class="grp">${objHTML(g.head, prevObj(g.head.o.id))}${
+    g.elems.length ? `<div class="erow">${g.elems.map(x => objHTML(x, prevObj(x.o.id))).join('')}</div>` : ''}</div>`).join('');
+  memEl.innerHTML = `<svg class="wires" aria-hidden="true"></svg><div class="frames">${frames}</div><div class="heap">${heap}</div>`;
+  drawWires();
+}
+/* One curve per variable: from the right edge of its id to the object.
+   Objects in the row under a list are entered from below so the line never crosses a box. */
+function drawWires() {
+  const svg = memEl.querySelector('.wires');
+  if (!svg) return;
+  const base = memEl.getBoundingClientRect();
+  const fs = parseFloat(getComputedStyle(memEl).fontSize) || 20;
+  const A = fs * 0.42, W = fs * 0.25;
+  let out = '';
+  $$('.vrow', memEl).forEach(row => {
+    const chips = $$('.ref:not(.old)', row), chip = chips[chips.length - 1];
+    if (!chip) return;
+    const id = chip.dataset.id, obj = memEl.querySelector(`.heap .obj[data-id="${id}"]`);
+    if (!obj) return;
+    const a = chip.getBoundingClientRect(), b = obj.querySelector('.obox').getBoundingClientRect();
+    const x1 = a.right - base.left + 2, y1 = a.top + a.height / 2 - base.top;
+    let d, tip;
+    if (obj.parentElement.classList.contains('erow') && obj.previousElementSibling) {
+      const bx = b.left + b.width / 2 - base.left, by = b.bottom - base.top + 2, ey = by + A;
+      const k1 = Math.max(fs, (bx - x1) * 0.55), k2 = Math.max(fs * 1.1, (y1 - ey) * 0.6);
+      d = `M${x1},${y1} C${x1 + k1},${y1} ${bx},${ey + k2} ${bx},${ey}`;
+      tip = `${bx},${by} ${bx - W},${ey} ${bx + W},${ey}`;
+    } else {
+      const bx = b.left - base.left - 2, by = b.top + b.height / 2 - base.top, ex = bx - A;
+      const k = Math.max(fs * 0.6, (ex - x1) * 0.5);
+      d = `M${x1},${y1} C${x1 + k},${y1} ${ex - k},${by} ${ex},${by}`;
+      tip = `${bx},${by} ${ex},${by - W} ${ex},${by + W}`;
+    }
+    out += `<g class="wire${chip.classList.contains('chg') ? ' chg' : ''}" data-id="${id}"><path d="${d}"/><polygon points="${tip}"/></g>`;
+  });
+  svg.setAttribute('width', base.width);
+  svg.setAttribute('height', base.height);
+  svg.innerHTML = out;
+  applyBrush();
+}
+let wireFrame = 0;
+new ResizeObserver(() => { cancelAnimationFrame(wireFrame); wireFrame = requestAnimationFrame(drawWires); }).observe(memEl);
+if (document.fonts) document.fonts.ready.then(drawWires);
+
+/* ---------- loop strip: the items a for loop walks, or a list/string with an index pointer ---------- */
+function stripFor(s) {
+  const t = !custom[cur.key] && cur.ex.track;
+  if (!t) return s.loop;
+  const find = name => { for (let i = s.frames.length - 1; i >= 0; i--) for (const [n, id] of s.frames[i].vars) if (n === name) return id; return undefined; };
+  const so = s.heap[find(t.seq)];
+  if (!so || (so.t !== 'list' && so.t !== 'str')) return null;
+  const isList = so.t === 'list';
+  const cells = isList ? so.items.map(id => (s.heap[id] ? s.heap[id].v : '?')) : [...so.raw];
+  const io = s.heap[find(t.idx)];
+  return { label: `${t.seq}[${t.idx}]`, var: t.idx, pos: io && io.t === 'int' ? parseInt(io.v, 10) : -1, cells, ids: isList ? so.items : cells.map(() => null), len: cells.length };
+}
+function renderLoop(s) {
+  const L = stripFor(s), wrap = $('#loopwrap');
+  wrap.hidden = !L;
+  if (!L) return;
+  $('#looplabel').textContent = L.label;
+  const cell = (val, i, id, ghost) => `<div class="cell${ghost ? ' ghost' : ''}"><div class="box${i === L.pos ? ' read' : ''}"${id != null ? ` data-id="${id}"` : ''}>${esc(val)}</div><div class="idx">${i}</div><div class="pl">${i === L.pos ? '↑ ' + esc(L.var) : ''}</div></div>`;
+  let h = L.cells.slice(0, 40).map((c, i) => cell(c, i, L.ids[i])).join('');
+  if (L.len > 40) h += '<span class="more">…</span>';
+  else if (L.pos >= L.len) h += cell('', L.len, null, true);
+  $('#strip').innerHTML = h;
+}
+
+/* ---------- render ---------- */
+function render() {
+  const s = cur.steps[cur.k], prev = cur.k ? cur.steps[cur.k - 1] : null, ex = cur.ex;
+
+  if (!cur.edit) {
+    hlEl.hidden = s.line < 0;
+    if (s.line >= 0) linesEl.style.setProperty('--line', s.line);
+    lineEls.forEach((el, i) => { el.classList.toggle('cur', i === s.line); $('.note', el).innerHTML = ''; });
+    const n = s.note;
+    if (n && s.line >= 0 && lineEls[s.line]) {
+      let h;
+      if (n.text) h = `# ${esc(n.text)}`;
+      else {
+        h = `# ${n.e ? esc(clip(n.e)) + ' ' : ''}→ ${showRes ? esc(clip(n.r, 40)) : '?'}`;
+        if (showRes && n.id !== undefined && !n.err) h += ` <span class="nid" data-id="${n.id}">id${n.id}</span>`;
+      }
+      $('.note', lineEls[s.line]).innerHTML = h;
+    }
+  }
+
+  renderLoop(s);
+  renderMem(s, prev);
+
+  const outEl = $('#out');
+  outEl.innerHTML = s.out.map((t, i) => {
+    const last = i === s.out.length - 1;
+    const cls = [last && prev && prev.out.length < s.out.length ? 'new' : '', last && s.err ? 'err' : ''].join(' ').trim();
+    return `<div class="${cls}"><span>${esc(t)}</span></div>`;
+  }).join('');
+  outEl.scrollTop = outEl.scrollHeight;
+  stateEl.classList.toggle('ended', s.ended);
+
+  let hint = esc(cur.status);
+  const isCustom = !!custom[cur.key];
+  if (!hint && s.ended && !s.err && !isCustom && ex.check) hint = esc(ex.check(cur.steps, s));
+  if (!hint && s.ended && !s.err && !isCustom && cur.solOut) {
+    const same = cur.solOut.join('\n') === s.out.join('\n');
+    hint = same ? '✓ Same output as a correct solution.' : `✗ A correct solution prints ${showRes ? esc(cur.solOut.join(' / ')) : 'something different'}.`;
+  }
+  if (answersOn[cur.key] && ex.answer) hint += `<span class="ans">${esc(ex.answer)}</span>`;
+  $('#hint').innerHTML = hint;
+
+  const N = cur.steps.length, inf = !cur.done;
+  $('#back').disabled = $('#restart').disabled = cur.k === 0;
+  $('#next').disabled = !inf && cur.k === N - 1;
+  const scrub = $('#scrub');
+  scrub.hidden = inf || N < 2;
+  scrub.max = N - 1; scrub.value = cur.k;
+  $('#counter').textContent = `${cur.k + 1} / ${inf ? '∞' : N}`;
+
+  applyBrush();
+}
+
+/* ---------- brushing & linking ---------- */
+function applyBrush() {
+  const b = hover ?? lock, s = cur.steps[cur.k];
+  if (!s) return;
+  const ids = new Set(), names = new Set();
+  let role = null;
+  if (b && b.kind === 'recipe') role = b.name;
+  if (b && b.kind === 'var') { names.add(b.name); s.frames.forEach(f => f.vars.forEach(([n, id]) => { if (n === b.name) ids.add(id); })); }
+  if (b && b.kind === 'id') { ids.add(b.name); s.frames.forEach(f => f.vars.forEach(([n, id]) => { if (id === b.name) names.add(n); })); }
+  app.classList.toggle('brushing', !!b && b.kind !== 'recipe');
+  app.classList.toggle('rbrushing', !!role);
+  $$('[data-var]').forEach(el => el.classList.toggle('on', names.has(el.dataset.var)));
+  $$('[data-id]').forEach(el => el.classList.toggle('on', ids.has(+el.dataset.id)));
+  $$('.obj').forEach(o => o.classList.toggle('rel', [...o.querySelectorAll('.ref')].some(r => ids.has(+r.dataset.id))));
+  $$('[data-recipe]').forEach(el => el.classList.toggle('on', el.dataset.recipe === role));
+  lineEls.forEach(el => el.classList.toggle('ron', !!role && (el.dataset.roles || '').split(' ').includes(role)));
+}
+function brushTarget(e) {
+  if (!e.target.closest || e.target.matches('input, select, textarea')) return null;
+  const r = e.target.closest('[data-recipe]');
+  if (r) return { kind: 'recipe', name: r.dataset.recipe };
+  const i = e.target.closest('[data-id]');
+  if (i && !i.classList.contains('obj')) return { kind: 'id', name: +i.dataset.id };
+  if (i && e.target.closest('.olabel')) return { kind: 'id', name: +i.dataset.id };
+  const v = e.target.closest('[data-var]');
+  return v ? { kind: 'var', name: v.dataset.var } : null;
+}
+const same = (a, b) => !!a && !!b && a.kind === b.kind && a.name === b.name;
+document.addEventListener('pointerover', e => { const t = brushTarget(e); if (!same(t, hover)) { hover = t; applyBrush(); } });
+document.addEventListener('pointerleave', () => { hover = null; applyBrush(); });
+document.addEventListener('click', e => { const t = brushTarget(e); if (!t) return; lock = same(t, lock) ? null : t; applyBrush(); });
+document.addEventListener('focusin', e => { const t = brushTarget(e); if (t) { hover = t; applyBrush(); } });
+document.addEventListener('focusout', e => { if (brushTarget(e)) { hover = null; applyBrush(); } });
+
+/* ---------- stepping ---------- */
+function ensure(k) {
+  while (cur.steps.length <= k && !cur.done) {
+    const r = cur.gen.next();
+    if (r.done) { cur.done = true; break; }
+    cur.steps.push(r.value);
+  }
+}
+function go(k) { ensure(k); cur.k = Math.max(0, Math.min(cur.steps.length - 1, k)); if (!cur.done) updateBadges(); render(); }
+$('#next').onclick = () => go(cur.k + 1);
+$('#back').onclick = () => go(cur.k - 1);
+$('#restart').onclick = () => go(0);
+$('#scrub').oninput = e => go(+e.target.value);
+$('#results').onchange = e => { showRes = e.target.checked; render(); };
+
+document.addEventListener('keydown', e => {
+  const t = e.target;
+  if (t.matches('input.arg, select, textarea, input[type=range]')) { if (e.key === 'Escape' || (e.key === 'Enter' && !t.matches('textarea'))) t.blur(); return; }
+  if (t.matches('button') && (e.key === ' ' || e.key === 'Enter')) return;
+  if ((t.dataset.var || t.dataset.recipe || t.dataset.id) && e.key === 'Enter') { t.click(); return; }
+  if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(cur.k + 1); }
+  else if (e.key === 'ArrowLeft') { e.preventDefault(); go(cur.k - 1); }
+  else if (e.key === 'Home') { e.preventDefault(); go(0); }
+  else if (e.key === 'End' && cur.done) { e.preventDefault(); go(cur.steps.length - 1); }
+  else if (e.key === 'Escape') { lock = hover = null; applyBrush(); }
+});
+
+/* ---------- running the code ---------- */
+const blankSnap = line => ({ line, frames: [], heap: {}, out: [], note: null, loop: null, ended: false, err: false });
+function load() {
+  const ex = cur.ex, raw = custom[cur.key];
+  let blanks = false;
+  if (!raw) for (const [id, f] of Object.entries(ex.fields)) if (f.blank && !cur.vals[id].trim()) blanks = true;
+  $$('.arg', linesEl).forEach(inp => inp.setAttribute('aria-invalid', 'false'));
+  cur.status = ''; cur.vm = null; cur.solOut = null; cur.k = 0;
+  const lines = currentLines();
+  let prog = null;
+  if (blanks) cur.status = 'Fill in the blanks to run this.';
+  else {
+    try { prog = parseProgram(lines); }
+    catch (e) {
+      if (!(e instanceof PyError)) throw e;
+      cur.status = `${e.pyName}${e.line !== undefined ? ` on line ${e.line + 1}` : ''}: ${e.message}`;
+      if (e.line !== undefined && lineEls[e.line]) $$('.arg', lineEls[e.line]).forEach(inp => inp.setAttribute('aria-invalid', 'true'));
+    }
+  }
+  if (!prog) {
+    const entry = ex.lines.findIndex(l => /^[A-Za-z_]\w*\s*[=(]/.test(l) && !/^def\b/.test(l));
+    cur.steps = [blankSnap(Math.max(0, entry))]; cur.done = true;
+  } else {
+    cur.vm = makeVM(prog); cur.gen = cur.vm.run(); cur.steps = []; cur.done = false;
+    ensure(MAX_PRERUN);
+    if (ex.compare && !raw && cur.done) {
+      const solVals = { ...cur.vals };
+      for (const [id, f] of Object.entries(ex.fields)) if (f.sol !== undefined) solVals[id] = f.sol;
+      cur.solOut = runToEnd(fill(ex, solVals));
+    }
+  }
+  if (!cur.edit) updateBadges();
+  render();
+}
+
+/* ---------- examples, presets, reset, answers ---------- */
+const defaults = ex => Object.fromEntries(Object.entries(ex.fields).map(([id, f]) => [id, f.def]));
+function setAbout() {
+  const ex = cur.ex;
+  $('#about').innerHTML = custom[cur.key] ? 'Your edited version. <b>Reset code</b> brings back the original.' : ex.about;
+  $('#presets').innerHTML = !custom[cur.key] && ex.presets ? ex.presets.map((p, i) => `<button class="chipbtn" data-preset="${i}">${esc(p.label)}</button>`).join('') : '';
+}
+$('#presets').addEventListener('click', e => {
+  const b = e.target.closest('[data-preset]'); if (!b) return;
+  Object.assign(cur.vals, cur.ex.presets[+b.dataset.preset].vals);
+  buildCode(); load();
+});
+function useExample(key) {
+  if (cur.key) saved[cur.key] = cur.vals;
+  cur.key = key; cur.ex = PROGRAMS[key]; cur.edit = false;
+  $('#edit').textContent = 'Edit code';
+  cur.vals = saved[key] || defaults(cur.ex);
+  hover = lock = null;
+  $$('.seg button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.ex === key)));
+  $('#answers').hidden = !cur.ex.answer;
+  $('#answers').textContent = answersOn[key] ? 'Hide answers' : 'Show answers';
+  setAbout(); buildCode(); load();
+}
+$('#reset').onclick = () => {
+  delete saved[cur.key]; delete answerBackup[cur.key]; delete custom[cur.key]; answersOn[cur.key] = false;
+  cur.vals = defaults(cur.ex); cur.edit = false;
+  $('#edit').textContent = 'Edit code';
+  $('#answers').textContent = 'Show answers';
+  setAbout(); buildCode(); load();
+};
+$('#answers').onclick = () => {
+  const key = cur.key, hasSol = Object.values(cur.ex.fields).some(f => f.sol !== undefined);
+  answersOn[key] = !answersOn[key];
+  if (hasSol) {
+    if (!answersOn[key] && answerBackup[key]) { cur.vals = answerBackup[key]; delete answerBackup[key]; }
+    else if (answersOn[key]) {
+      answerBackup[key] = { ...cur.vals }; cur.vals = { ...cur.vals };
+      for (const [id, f] of Object.entries(cur.ex.fields)) if (f.sol !== undefined) cur.vals[id] = f.sol;
+    }
+  }
+  $('#answers').textContent = answersOn[key] ? 'Hide answers' : 'Show answers';
+  if (hasSol) { buildCode(); load(); } else render();
+};
+for (const [key, ex] of Object.entries(PROGRAMS)) {
+  const b = document.createElement('button');
+  b.dataset.ex = key; b.textContent = ex.label; b.setAttribute('aria-pressed', 'false');
+  b.onclick = () => useExample(key);
+  $('#seg-' + ex.group).appendChild(b);
+}
+useExample(location.hash.slice(1) in PROGRAMS ? location.hash.slice(1) : 'listdemo');
+</script>
+
+</body>
+</html>
